@@ -8,7 +8,7 @@
 #include "render_method.h"
 
 /// For waveforms without per-phase timing, the default hold time for each line is 12us
-const static int DEFAULT_FRAME_TIME = 120;
+static const int DEFAULT_FRAME_TIME = 120;
 
 static inline int min(int x, int y) {
     return x < y ? x : y;
