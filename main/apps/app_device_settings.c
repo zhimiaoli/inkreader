@@ -93,6 +93,8 @@
 #include "read_pico_search.h"
 #include "book_store.h"
 #include "book_cover.h"
+#include "book_orbit_sync.h"
+#include "book_progress.h"
 #include "ota_update.h"
 #include "ota_online.h"
 #include "esp_app_desc.h"
@@ -131,7 +133,7 @@ typedef enum { SETTINGS_MAIN, SETTINGS_WIFI, SETTINGS_TIME,
 #else
                SETTINGS_POWER_SLEEP, SETTINGS_AUTO_LOCK, SETTINGS_PROFILE, SETTINGS_AVATAR,
 #endif
-               SETTINGS_BLUETOOTH, SETTINGS_BLE_SCAN,
+               SETTINGS_BLUETOOTH, SETTINGS_BLE_SCAN, SETTINGS_BOOKORBIT,
 #if KIIKO_BOARD_METALIO47
                SETTINGS_LOCK_PIN, SETTINGS_PIN_ENTRY, SETTINGS_TEXT_EDIT, SETTINGS_FRONTLIGHT, SETTINGS_LANGUAGE } settings_page_t;
 #else
@@ -446,7 +448,7 @@ static int settings_main_row_height(void) {
     return 82;
 }
 #define SETTINGS_ROW_H settings_main_row_height()
-#define SETTINGS_WIRELESS_ROWS 3
+#define SETTINGS_WIRELESS_ROWS 4
 #if KIIKO_BOARD_METALIO47
 #define SETTINGS_DISPLAY_ROWS 9
 #else
@@ -482,9 +484,12 @@ static int settings_main_row_height(void) {
 // with 8 px to spare.
 #define SETTINGS_SCROLL_MAX \
     (SETTINGS_MAINTENANCE_Y + SETTINGS_MAINTENANCE_ROWS * SETTINGS_ROW_H - UI_NAV_REFRESH_END + 12)
-static char s_editor[96], s_editor_notice[80];
+static char s_editor[256], s_editor_notice[80];
 static ui_text_edit_t s_editor_input;
 static bool s_editor_signature;
+// BookOrbit 编辑器字段：0 无，1 服务器地址，2 用户名，3 密码（掩码显示）。
+// BookOrbit editor field: 0 none, 1 server URL, 2 username, 3 password (masked).
+static int s_editor_orbit;
 static const char *system_font_label(const char *path) {
     if (!path || !path[0]) return "思源黑体";
     const char *name = strrchr(path, '/');
@@ -625,10 +630,26 @@ static void wallpaper_scan(void) {
 
 static void profile_editor_open(bool signature) {
     s_editor_signature = signature;
+    s_editor_orbit = 0;
     snprintf(s_editor, sizeof(s_editor), "%s", signature ? app_settings_status_signature() : app_settings_device_name());
     ui_text_edit_init(&s_editor_input, s_editor, sizeof(s_editor));
     s_editor_notice[0] = 0;
     ui_keyboard_begin(&s_editor_input, false);
+    s_page = SETTINGS_TEXT_EDIT;
+}
+
+// BookOrbit 凭据编辑器：服务器地址/用户名用普通键盘，密码用掩码与 ASCII 键盘。
+// BookOrbit credential editor: plain keyboard for URL/username; masked ASCII for password.
+static void orbit_editor_open(int field) {
+    s_editor_signature = false;
+    s_editor_orbit = field;
+    const char *value = field == 1 ? app_settings_orbit_server()
+                        : field == 2 ? app_settings_orbit_user()
+                                     : app_settings_orbit_password();
+    snprintf(s_editor, sizeof(s_editor), "%s", value ? value : "");
+    ui_text_edit_init(&s_editor_input, s_editor, sizeof(s_editor));
+    s_editor_notice[0] = 0;
+    ui_keyboard_begin(&s_editor_input, field == 3);
     s_page = SETTINGS_TEXT_EDIT;
 }
 
@@ -1172,10 +1193,20 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
         return;
     }
     if (s_page == SETTINGS_TEXT_EDIT) {
-        back_header(fb, s_editor_signature ? "状态栏签名" : "设备名称");
+        const bool orbit_masked = s_editor_orbit == 3;
+        back_header(fb, s_editor_signature ? "状态栏签名"
+                                  : s_editor_orbit == 1 ? "BookOrbit 服务器"
+                                  : s_editor_orbit == 2 ? "BookOrbit 用户名"
+                                  : s_editor_orbit == 3 ? "BookOrbit 密码" : "设备名称");
         ui_text(fb, 642, 95, 24, "完成", EPD_DRAW_ALIGN_RIGHT, false);
-        ui_text(fb, 36, 201, 21, s_editor_signature ? "状态栏中间显示，留空则隐藏" : "显示在设置页的资料卡", EPD_DRAW_ALIGN_LEFT, false);
-        ui_text_input_draw(fb, &s_editor_input, (EpdRect){36, 243, 612, 82}, 28, false, NULL);
+        ui_text(fb, 36, 201, 21,
+                s_editor_signature ? "状态栏中间显示，留空则隐藏"
+                : s_editor_orbit == 1 ? "裸主机名默认 https；粘贴完整 API 地址会自动剥后缀"
+                : s_editor_orbit == 2 ? "服务器 KOReader 同步凭据的用户名"
+                : s_editor_orbit == 3 ? "同一凭据的密码；留空清除"
+                                     : "显示在设置页的资料卡",
+                EPD_DRAW_ALIGN_LEFT, false);
+        ui_text_input_draw(fb, &s_editor_input, (EpdRect){36, 243, 612, 82}, 28, orbit_masked, NULL);
         if (s_editor_notice[0]) ui_text_fixed_vc(fb, 36, 510, 22, s_editor_notice, EPD_DRAW_ALIGN_LEFT, false);
         ui_keyboard_draw(fb, UI_SYSTEM_KEYBOARD_TOP);
         settings_navigation(fb);
@@ -1248,6 +1279,34 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
         row(fb, 296, s_main_wifi_saved ? s_main_wifi : "尚未配置", s_main_wifi_saved ? "已保存" : "");
         row(fb, 408, "连接或更改网络", "前往传输  ›");
         ui_text(fb, 54, 529, 21, "配网后可在日期与时间中进行 WiFi 对时。", EPD_DRAW_ALIGN_LEFT, false);
+        settings_navigation(fb);
+        return;
+    }
+    if (s_page == SETTINGS_BOOKORBIT) {
+        back_header(fb, "BookOrbit 同步");
+        book_orbit_status_t orbit;
+        book_orbit_get_status(&orbit);
+        // 服务器地址按行宽截断；密码不回显，只显示是否已设置。
+        char server_value[80];
+        snprintf(server_value, sizeof(server_value), "%s",
+                 app_settings_orbit_server()[0] ? app_settings_orbit_server() : "未设置");
+        fit_value(server_value, 400);
+        row(fb, 266, "服务器地址", server_value);
+        row(fb, 334, "用户名",
+            app_settings_orbit_user()[0] ? app_settings_orbit_user() : "未设置");
+        row(fb, 402, "密码", app_settings_orbit_password()[0] ? "已设置" : "未设置");
+        ui_draw_button(fb, (EpdRect){54, 480, 576, 78},
+                       orbit.busy ? "同步中…" : orbit.configured ? "立即同步" : "请先完成配置",
+                       orbit.configured && !orbit.busy);
+        char status_line[128];
+        snprintf(status_line, sizeof(status_line), "%s",
+                 orbit.configured ? (orbit.message[0] ? orbit.message : "待同步") : "配置后自动同步进度、session 与高亮");
+        ui_text_box(fb, (EpdRect){54, 590, 576, 56}, 21, status_line, EPD_DRAW_ALIGN_LEFT, false);
+        char detail[96];
+        snprintf(detail, sizeof(detail), "上次同步 %s · 云端高亮 +%d",
+                 orbit.last_sync[0] ? orbit.last_sync : "无", orbit.highlights);
+        ui_text_box(fb, (EpdRect){54, 646, 576, 56}, 19, detail, EPD_DRAW_ALIGN_LEFT, false);
+        if (s_notice[0]) ui_text_box(fb, (EpdRect){54, 702, 576, 56}, 19, s_notice, EPD_DRAW_ALIGN_LEFT, false);
         settings_navigation(fb);
         return;
     }
@@ -1768,9 +1827,24 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
         ui_draw_icon(fb,625,profile_y+profile_h/2,26,UI_ICON_CHEVRON_RIGHT,UI_GRAY_BLACK);
     }
     char wifi[56];snprintf(wifi,sizeof(wifi),"%s",s_main_wifi_saved?s_main_wifi:"未配置");
-    const char *connection_labels[]={"WiFi","蓝牙翻页器","日期与时间"};
-    const char *connection_values[]={wifi,app_settings_ble_turner()?"已开启":"已关闭","设置"};
-    const int connection_icons[]={0,1,6};
+    // BookOrbit 行显示归一化后的服务器主机；未配置时保持安静。
+    // The BookOrbit row shows the normalized server host; quiet while unconfigured.
+    char orbit_value[64];
+    {
+        const char *server=app_settings_orbit_server();
+        const char *user=app_settings_orbit_user();
+        const char *password=app_settings_orbit_password();
+        if(server[0]&&user[0]&&password[0]){
+            char normalized[224];
+            if(!book_orbit_normalize_server_url(server,normalized,sizeof(normalized)))normalized[0]=0;
+            const char *host=normalized;
+            if(!strncasecmp(host,"https://",8))host+=8;else if(!strncasecmp(host,"http://",7))host+=7;
+            snprintf(orbit_value,sizeof(orbit_value),"%.60s",host);
+        }else snprintf(orbit_value,sizeof(orbit_value),"未配置");
+    }
+    const char *connection_labels[]={"WiFi","蓝牙翻页器","日期与时间","BookOrbit 同步"};
+    const char *connection_values[]={wifi,app_settings_ble_turner()?"已开启":"已关闭","设置",orbit_value};
+    const int connection_icons[]={0,1,6,11};
     setting_group(fb,SETTINGS_WIRELESS_Y-49,"连接与时间",SETTINGS_WIRELESS_Y,
                   connection_icons,connection_labels,connection_values,SETTINGS_WIRELESS_ROWS);
     char font_name[96],contrast[24],idle[24],signature[96];
@@ -2383,6 +2457,16 @@ static app_redraw_t on_tick(app_ctx_t *ctx) {
             ? profile_editor_paint(ctx, false) : APP_REDRAW_NONE;
     }
     if (s_page == SETTINGS_BLUETOOTH && ble_receive_feedback()) return APP_REDRAW_PAGE;
+    if (s_page == SETTINGS_BOOKORBIT) {
+        // 同步在后台跑：状态 revision 变化时整页重绘，让进度行跟着走。
+        static unsigned orbit_revision;
+        book_orbit_status_t orbit;
+        book_orbit_get_status(&orbit);
+        if (orbit.revision != orbit_revision) {
+            orbit_revision = orbit.revision;
+            return APP_REDRAW_PAGE;
+        }
+    }
     // 蓝牙启动失败的原因转成提示。放在这里而不是 render()：render 必须是纯绘制，
     // 而 take_* 会清空状态。
     // Fold a Bluetooth start failure into the notice here rather than in render(), which must
@@ -2505,7 +2589,7 @@ static app_redraw_t on_tick(app_ctx_t *ctx) {
 static EpdRect s_input_area;
 static bool s_input_layout, s_input_settle;
 static app_redraw_t profile_editor_paint(app_ctx_t *ctx, bool field) {
-    ui_keyboard_update_t update = ui_keyboard_update(ctx->fb, UI_SYSTEM_KEYBOARD_TOP, (EpdRect){36, 243, 612, 82}, 28, false, NULL, field);
+    ui_keyboard_update_t update = ui_keyboard_update(ctx->fb, UI_SYSTEM_KEYBOARD_TOP, (EpdRect){36, 243, 612, 82}, 28, s_editor_orbit == 3, NULL, field);
     s_input_area = update.area; s_input_layout = update.layout; s_input_settle = update.settle;
     return update.area.width ? APP_REDRAW_AREA : APP_REDRAW_NONE;
 }
@@ -2520,17 +2604,59 @@ static app_redraw_t profile_editor_gesture(app_ctx_t *ctx, const ui_gesture_even
     if (ev->type != UI_GESTURE_TAP) return feedback ? profile_editor_paint(ctx, false) : APP_REDRAW_NONE;
     int x = ev->x0, y = ev->y0;
     if (y < 160) {
-        if (x < 160) { ui_keyboard_end(); s_page = s_editor_signature ? SETTINGS_MAIN : SETTINGS_PROFILE; return APP_REDRAW_PAGE; }
+        if (x < 160) {
+            ui_keyboard_end();
+            s_page = s_editor_orbit ? SETTINGS_BOOKORBIT : s_editor_signature ? SETTINGS_MAIN : SETTINGS_PROFILE;
+            return APP_REDRAW_PAGE;
+        }
         if (x > 510) goto save_text;
     }
     if (ui_text_input_tap(&s_editor_input, (EpdRect){36, 243, 612, 82}, 28,
-                          false, NULL, x, y)) return profile_editor_paint(ctx, true);
+                          s_editor_orbit == 3, NULL, x, y)) return profile_editor_paint(ctx, true);
     ui_keyboard_result_t result = ui_keyboard_tap(x, y, UI_SYSTEM_KEYBOARD_TOP, esp_timer_get_time() / 1000);
     if (result == UI_KEYBOARD_DONE) goto save_text;
     return result == UI_KEYBOARD_CHANGED ? profile_editor_paint(ctx, false) : APP_REDRAW_NONE;
 save_text:
     if (ui_keyboard_pending()) {
         snprintf(s_editor_notice, sizeof(s_editor_notice), "请先选择候选字");
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_orbit == 1) {
+        char normalized[224];
+        if (!s_editor[0]) { snprintf(s_editor_notice, sizeof(s_editor_notice), "服务器地址不能为空"); return APP_REDRAW_PAGE; }
+        if (!book_orbit_normalize_server_url(s_editor, normalized, sizeof(normalized))) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "服务器地址无效");
+            return APP_REDRAW_PAGE;
+        }
+        app_settings_set_orbit_server(normalized);
+        if (strcmp(app_settings_orbit_server(), normalized)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_BOOKORBIT;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_orbit == 2) {
+        if (!s_editor[0]) { snprintf(s_editor_notice, sizeof(s_editor_notice), "用户名不能为空"); return APP_REDRAW_PAGE; }
+        app_settings_set_orbit_user(s_editor);
+        if (strcmp(app_settings_orbit_user(), s_editor)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_BOOKORBIT;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_orbit == 3) {
+        // 留空即清除密码，三项不再齐备时同步自动停用。
+        app_settings_set_orbit_password(s_editor);
+        if (s_editor[0] && strcmp(app_settings_orbit_password(), s_editor)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_BOOKORBIT;
         return APP_REDRAW_PAGE;
     }
     if (s_editor_signature) app_settings_set_status_signature(s_editor);
@@ -2732,6 +2858,24 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
     }
     if(s_page==SETTINGS_FACTORY_RESET)return reset_gesture(ctx,ev);
     if (s_page == SETTINGS_TEXT_EDIT) return profile_editor_gesture(ctx, ev);
+    if (s_page == SETTINGS_BOOKORBIT && ev->type == UI_GESTURE_TAP) {
+        int x = ev->x0, y = ev->y0;
+        if (y < 190) { s_page = SETTINGS_MAIN; return APP_REDRAW_PAGE; }
+        if (y >= 266 && y < 334) { orbit_editor_open(1); return APP_REDRAW_PAGE; }
+        if (y >= 334 && y < 402) { orbit_editor_open(2); return APP_REDRAW_PAGE; }
+        if (y >= 402 && y < 470) { orbit_editor_open(3); return APP_REDRAW_PAGE; }
+        if (x >= 54 && x < 630 && y >= 480 && y < 558) {
+            char last[BOOK_ORBIT_EVENT_PATH_MAX];
+            if (!book_progress_last_path(last, sizeof(last))) {
+                snprintf(s_notice, sizeof(s_notice), "没有可同步的书籍");
+                return APP_REDRAW_PAGE;
+            }
+            book_orbit_request_sync(true, last);
+            snprintf(s_notice, sizeof(s_notice), "已在后台开始同步");
+            return APP_REDRAW_PAGE;
+        }
+        return APP_REDRAW_NONE;
+    }
     if (s_page == SETTINGS_MAIN || s_page == SETTINGS_BLUETOOTH || s_page == SETTINGS_BLE_SCAN || s_page == SETTINGS_SHELF_STYLE) {
         int limit = SETTINGS_SCROLL_MAX;
         int *offset = &s_main_scroll;
@@ -3221,7 +3365,8 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
             s_page=SETTINGS_BLUETOOTH;s_ble_scroll=s_ble_learning=0;s_ble_notice[0]=s_ble_feedback[0]=0;
             ble_pt_raw_t unused;while(ble_pt_pop_raw(&unused)){}return APP_REDRAW_PAGE;
         }
-        s_page=SETTINGS_TIME;return APP_REDRAW_PAGE;
+        if(row==2) { s_page=SETTINGS_TIME;return APP_REDRAW_PAGE; }
+        s_page=SETTINGS_BOOKORBIT;s_notice[0]=0;return APP_REDRAW_PAGE;
     }
     if(y>=SETTINGS_DISPLAY_Y && y<SETTINGS_DISPLAY_Y+SETTINGS_DISPLAY_ROWS*SETTINGS_ROW_H) {
         row=(y-SETTINGS_DISPLAY_Y)/SETTINGS_ROW_H;

@@ -66,6 +66,9 @@ static bool reader_full_pages_valid(uint8_t pages) {
 #define NVS_KEY_DEVICE_NAME "dev_name"
 #define NVS_KEY_AVATAR "dev_avatar"
 #define NVS_KEY_STATUS_SIGNATURE "status_sig"
+#define NVS_KEY_ORBIT_SERVER "orbit_srv"
+#define NVS_KEY_ORBIT_USER "orbit_user"
+#define NVS_KEY_ORBIT_PASS "orbit_pass"
 #define NVS_KEY_FONT "font"
 #define NVS_KEY_SYS_FONT "sys_font"
 #define NVS_KEY_SYS_SIZE "sys_size"
@@ -135,6 +138,9 @@ static char s_device_name[64] = "kiikoread";
 #endif
 static char s_avatar[288];
 static char s_status_signature[96];
+static char s_orbit_server[224];
+static char s_orbit_user[64];
+static char s_orbit_password[96];
 static char s_font[FONT_PATH_MAX];
 static char s_system_font[FONT_PATH_MAX];
 static uint8_t s_system_size = 120;
@@ -308,6 +314,12 @@ void app_settings_init(void) {
     value_len = sizeof(s_status_signature);
     if (nvs_get_str(h, NVS_KEY_STATUS_SIGNATURE, s_status_signature, &value_len) != ESP_OK)
         s_status_signature[0] = 0;
+    value_len = sizeof(s_orbit_server);
+    if (nvs_get_str(h, NVS_KEY_ORBIT_SERVER, s_orbit_server, &value_len) != ESP_OK) s_orbit_server[0] = 0;
+    value_len = sizeof(s_orbit_user);
+    if (nvs_get_str(h, NVS_KEY_ORBIT_USER, s_orbit_user, &value_len) != ESP_OK) s_orbit_user[0] = 0;
+    value_len = sizeof(s_orbit_password);
+    if (nvs_get_str(h, NVS_KEY_ORBIT_PASS, s_orbit_password, &value_len) != ESP_OK) s_orbit_password[0] = 0;
     size_t dir_len=sizeof(s_books_dir);
     if(nvs_get_str(h,NVS_KEY_BOOKS_DIR,s_books_dir,&dir_len)!=ESP_OK||!valid_media_dir(s_books_dir))
         strlcpy(s_books_dir,"/sdcard/books",sizeof(s_books_dir));
@@ -628,6 +640,21 @@ void app_settings_set_status_signature(const char *signature) {
     if (!signature || strnlen(signature, sizeof(s_status_signature)) >= sizeof(s_status_signature)) return;
     if (nvs_put_str(NVS_KEY_STATUS_SIGNATURE, signature))
         strlcpy(s_status_signature, signature, sizeof(s_status_signature));
+}
+const char *app_settings_orbit_server(void) { return s_orbit_server; }
+void app_settings_set_orbit_server(const char *url) {
+    if (!url || strnlen(url, sizeof(s_orbit_server)) >= sizeof(s_orbit_server)) return;
+    if (nvs_put_str(NVS_KEY_ORBIT_SERVER, url)) strlcpy(s_orbit_server, url, sizeof(s_orbit_server));
+}
+const char *app_settings_orbit_user(void) { return s_orbit_user; }
+void app_settings_set_orbit_user(const char *user) {
+    if (!user || strnlen(user, sizeof(s_orbit_user)) >= sizeof(s_orbit_user)) return;
+    if (nvs_put_str(NVS_KEY_ORBIT_USER, user)) strlcpy(s_orbit_user, user, sizeof(s_orbit_user));
+}
+const char *app_settings_orbit_password(void) { return s_orbit_password; }
+void app_settings_set_orbit_password(const char *password) {
+    if (!password || strnlen(password, sizeof(s_orbit_password)) >= sizeof(s_orbit_password)) return;
+    if (nvs_put_str(NVS_KEY_ORBIT_PASS, password)) strlcpy(s_orbit_password, password, sizeof(s_orbit_password));
 }
 
 const char* app_settings_font_path(void) {
@@ -1167,7 +1194,7 @@ static bool backup_home_valid(const settings_backup_home_t *v) {
 static unsigned backup_version(const settings_backup_v1_t *backup) {
     if (memcmp(backup->magic, "PICOSET", 7)) return 0;
     unsigned char c = backup->magic[7];
-    return c >= '1' && c <= '9' ? c - '0' : c == 'A' ? 10 : c == 'B' ? 11 : c == 'C' ? 12 : c == 'D' ? 13 : c == 'E' ? 14 : c == 'F' ? 15 : c == 'G' ? 16 : c == 'H' ? 17 : c == 'I' ? 18 : c == 'J' ? 19 : c == 'K' ? 20 : c == 'L' ? 21 : c == 'M' ? 22 : c == 'N' ? 23 : c == 'O' ? 24 : c == 'P' ? 25 : 0;
+    return c >= '1' && c <= '9' ? c - '0' : c == 'A' ? 10 : c == 'B' ? 11 : c == 'C' ? 12 : c == 'D' ? 13 : c == 'E' ? 14 : c == 'F' ? 15 : c == 'G' ? 16 : c == 'H' ? 17 : c == 'I' ? 18 : c == 'J' ? 19 : c == 'K' ? 20 : c == 'L' ? 21 : c == 'M' ? 22 : c == 'N' ? 23 : c == 'O' ? 24 : c == 'P' ? 25 : c == 'Q' ? 26 : 0;
 }
 
 static void backup_erase_secret(void *ptr, size_t size) {
@@ -1239,6 +1266,34 @@ static void backup_seal(settings_backup_v1_t *backup) {
     for (int i = 0; i < 4; ++i) backup->checksum[i] = (uint8_t)(value >> (i * 8));
 }
 
+// 中文：备份 v26 新增 BookOrbit 凭据块；v25 及更早的备份不覆盖设备上的凭据。
+// English: Backup v26 adds a BookOrbit credentials block; v25-and-older backups leave the
+// device's credentials untouched.
+typedef struct{char server[224],user[64],password[96];uint8_t checksum[4];}settings_backup_orbit_t;
+static uint32_t backup_orbit_checksum(const settings_backup_orbit_t*c){
+    uint32_t h=2166136261u;
+    for(size_t i=0;i<sizeof(c->server);++i){h^=(uint8_t)c->server[i];h*=16777619u;}
+    for(size_t i=0;i<sizeof(c->user);++i){h^=(uint8_t)c->user[i];h*=16777619u;}
+    for(size_t i=0;i<sizeof(c->password);++i){h^=(uint8_t)c->password[i];h*=16777619u;}
+    return h;
+}
+static settings_backup_orbit_t backup_orbit_make(void){
+    settings_backup_orbit_t c;memset(&c,0,sizeof(c));
+    strlcpy(c.server,s_orbit_server,sizeof(c.server));
+    strlcpy(c.user,s_orbit_user,sizeof(c.user));
+    strlcpy(c.password,s_orbit_password,sizeof(c.password));
+    uint32_t h=backup_orbit_checksum(&c);
+    for(unsigned i=0;i<4;++i)c.checksum[i]=(uint8_t)(h>>(8*i));
+    return c;
+}
+static bool backup_orbit_valid(const settings_backup_orbit_t*c){
+    uint32_t h=0;for(unsigned i=0;i<4;++i)h|=(uint32_t)c->checksum[i]<<(8*i);
+    return h==backup_orbit_checksum(c)&&
+        strnlen(c->server,sizeof(c->server))<sizeof(c->server)&&
+        strnlen(c->user,sizeof(c->user))<sizeof(c->user)&&
+        strnlen(c->password,sizeof(c->password))<sizeof(c->password);
+}
+
 static bool backup_card_ready(void) {
     read_pico_sd_info_t info = {0};
     return read_pico_sd_get_info(&info) == ESP_OK && info.mounted;
@@ -1247,7 +1302,7 @@ static bool backup_card_ready(void) {
 esp_err_t app_settings_backup_save(void) {
     if (!backup_card_ready()) return ESP_ERR_INVALID_STATE;
     settings_backup_v1_t backup = {0};
-    memcpy(backup.magic, "PICOSETP", sizeof(backup.magic));
+    memcpy(backup.magic, "PICOSETQ", sizeof(backup.magic));
     uint8_t *f = backup.flags;
     f[BK_SLEEP] = s_sleep;
     f[BK_PICKUP] = s_pickup_wake;
@@ -1345,6 +1400,8 @@ esp_err_t app_settings_backup_save(void) {
     if(ok)ok=fwrite(&controls,1,sizeof(controls),file)==sizeof(controls);
     settings_backup_shelf_t shelf=backup_shelf_make(s_shelf_order,s_shelf_badges);
     if(ok)ok=fwrite(&shelf,1,sizeof(shelf),file)==sizeof(shelf);
+    settings_backup_orbit_t orbit=backup_orbit_make();
+    if(ok)ok=fwrite(&orbit,1,sizeof(orbit),file)==sizeof(orbit);
     if (ok) ok = book_history_backup_write(file) == ESP_OK;
     if (ok) ok = fflush(file) == 0;
     if (ok) ok = fsync(fileno(file)) == 0;
@@ -1504,6 +1561,9 @@ esp_err_t app_settings_backup_restore(void) {
     reader_controls_normalize(&controls);
     settings_backup_shelf_t shelf=backup_shelf_make((profile.home_full_refresh&4)?1:0,true);
     if(ok&&version>=25)ok=fread(&shelf,1,sizeof(shelf),file)==sizeof(shelf)&&backup_shelf_valid(&shelf);
+    settings_backup_orbit_t orbit={0};
+    bool has_orbit = ok && version >= 26;
+    if (has_orbit) ok = fread(&orbit,1,sizeof(orbit),file)==sizeof(orbit)&&backup_orbit_valid(&orbit);
     bool has_history = ok && version >= 6;
     if (has_history) {
         history_position = ftell(file);
@@ -1572,6 +1632,11 @@ esp_err_t app_settings_backup_restore(void) {
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DEVICE_NAME, profile.device_name);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_AVATAR, profile.avatar);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_STATUS_SIGNATURE, profile.status_signature);
+    if (has_orbit && err == ESP_OK) {
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ORBIT_SERVER, orbit.server);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ORBIT_USER, orbit.user);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ORBIT_PASS, orbit.password);
+    }
     BACKUP_SET_U8(NVS_KEY_PICKUP, BK_PICKUP);
     BACKUP_SET_U8(NVS_KEY_SYS_SIZE, BK_SYS_SIZE);
     BACKUP_SET_U8(NVS_KEY_SYS_CONTRAST, BK_SYS_CONTRAST);
@@ -1640,6 +1705,11 @@ esp_err_t app_settings_backup_restore(void) {
     strlcpy(s_device_name, profile.device_name, sizeof(s_device_name));
     strlcpy(s_avatar, profile.avatar, sizeof(s_avatar));
     strlcpy(s_status_signature, profile.status_signature, sizeof(s_status_signature));
+    if (has_orbit) {
+        strlcpy(s_orbit_server, orbit.server, sizeof(s_orbit_server));
+        strlcpy(s_orbit_user, orbit.user, sizeof(s_orbit_user));
+        strlcpy(s_orbit_password, orbit.password, sizeof(s_orbit_password));
+    }
     s_pickup_wake = f[BK_PICKUP];
     s_system_size = f[BK_SYS_SIZE];
     s_system_contrast = f[BK_SYS_CONTRAST];

@@ -70,6 +70,7 @@ const EpdWaveform* display_main_shelf37_waveform(bool art){(void)art;return NULL
 const EpdWaveform* display_du14_white_waveform(void){return NULL;}
 const EpdWaveform* display_main_clean_waveform_with_phases(const EpdWaveform* wave,enum EpdDrawMode mode,unsigned white){(void)mode;assert(white==0||white==6||white==8);return wave;}
 const EpdWaveform* display_main_background_waveform_with_phases(const EpdWaveform* wave,enum EpdDrawMode mode,unsigned white){return display_main_clean_waveform_with_phases(wave,mode,white);}
+const EpdWaveform* display_main_fast_background_waveform_with_phases(const EpdWaveform* wave,enum EpdDrawMode mode,unsigned white){return display_main_clean_waveform_with_phases(wave,mode,white);}
 const EpdWaveform* display_main_switch_waveform(const EpdWaveform *wave,enum EpdDrawMode mode){(void)mode;return wave;}
 const EpdWaveform* display_main_shelf_waveform(enum EpdDrawMode mode){(void)mode;return &E0470_WAVEFORM;}
 const EpdWaveform* display_main_bw_waveform(void) {return &E0470_WAVEFORM;}

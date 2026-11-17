@@ -89,6 +89,15 @@ const char *app_settings_avatar_path(void);
 void app_settings_set_avatar_path(const char *path);
 const char *app_settings_status_signature(void);
 void app_settings_set_status_signature(const char *signature);
+/// BookOrbit 自托管书库同步：服务器地址（裸主机名默认 https）、用户名与密码；三项齐备才启用。
+/// BookOrbit self-hosted library sync: server URL (bare hosts default to https), user and
+/// password; sync stays off until all three are set.
+const char *app_settings_orbit_server(void);
+void app_settings_set_orbit_server(const char *url);
+const char *app_settings_orbit_user(void);
+void app_settings_set_orbit_user(const char *user);
+const char *app_settings_orbit_password(void);
+void app_settings_set_orbit_password(const char *password);
 /// 空路径表示固件内建字体；非空为 SD 上的 TTF。/ Empty path is the built-in font; non-empty is a TTF on the SD card.
 const char* app_settings_font_path(void);
 void app_settings_set_font_path(const char* path);

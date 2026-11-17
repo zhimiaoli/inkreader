@@ -201,6 +201,7 @@ extern const app_desc_t app_device_settings;
 #include "book_weread_cover.h"
 #include "book_added.h"
 #include "book_ticket.h"
+#include "book_orbit_sync.h"
 #include "sleep.h"
 #include "book_excerpt.h"
 #include "book_toc.h"
@@ -2177,6 +2178,16 @@ static unsigned percent(size_t page) {
     uint32_t off = book_position_bytes(book_chapter_byte_offset(s_chapter), chapter_end(),
                                        reader_page_offset(page), s_text_len);
     return (unsigned)((uint64_t)off * 100 / total);
+}
+// BookOrbit page-stats 事件用全书基点（0..10000），跨设备复现精确阅读比例。
+// BookOrbit page-stats events carry the whole-book position in basis points (0..10000).
+static unsigned percent_bp(size_t page) {
+    uint32_t total = book_total_bytes();
+    if (!total) return 0;
+    if (s_chapter + 1 == book_chapter_count() && page + 1 == book_layout_page_count()) return 10000;
+    uint32_t off = book_position_bytes(book_chapter_byte_offset(s_chapter), chapter_end(),
+                                       reader_page_offset(page), s_text_len);
+    return (unsigned)((uint64_t)off * 10000 / total);
 }
 static pending_progress_t* pending_find(const char* path) {
     for (pending_progress_t* p = s_pending; p; p = p->next) if (!strcmp(p->path, path)) return p;
@@ -6047,6 +6058,28 @@ static bool open_book_impl(app_ctx_t* ctx, const char* path) {
     s_px = app_settings_book_px();
     if (s_px < BOOK_PX_MIN || s_px > BOOK_PX_MAX) s_px = 48;
     size_t chapter = resume && p.chapter < book_chapter_count() ? p.chapter : 0;
+    // BookOrbit 远端进度建议：仅在比本地进度更靠前时采用，映射为章节与章内偏移。
+    // BookOrbit remote-progress suggestion: adopt it only when ahead of local progress,
+    // mapped to a chapter plus an in-chapter byte offset.
+    unsigned orbit_bp = 0;
+    if (book_orbit_take_resume(path, &orbit_bp) && orbit_bp > 0 && orbit_bp < 10000 &&
+        (!resume || orbit_bp > (unsigned)p.pct * 100)) {
+        uint32_t total = book_total_bytes();
+        if (total) {
+            uint32_t target = (uint32_t)((uint64_t)orbit_bp * total / 10000);
+            unsigned orbit_chapter = 0;
+            while (orbit_chapter + 1 < book_chapter_count() && book_chapter_byte_offset(orbit_chapter + 1) <= target)
+                ++orbit_chapter;
+            uint32_t start = book_chapter_byte_offset(orbit_chapter);
+            uint32_t end = orbit_chapter + 1 < book_chapter_count() ? book_chapter_byte_offset(orbit_chapter + 1) : total;
+            if (target >= start && target < end) {
+                chapter = orbit_chapter;
+                p.chapter = (uint16_t)orbit_chapter;
+                p.byte_off = target - start;
+                resume = true;
+            }
+        }
+    }
     if (!load_chapter(ctx, chapter, resume && p.chapter == chapter ? p.byte_off : 0, false)) {
         free_book();
         return false;
@@ -7203,6 +7236,12 @@ static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
     s_jump_offset = SIZE_MAX;
     s_last_turn_ms = s_stats_activity_ms = ctx->now_ms;
     ticket_count_turn();
+    // 向前翻页记录 BookOrbit 阅读 session 事件；自动同步自带冷却与低电量门控。
+    // Forward turns record BookOrbit session events; the auto sync self-throttles.
+    if (s_path[0]) {
+        book_orbit_note_turn(s_path, percent_bp(s_page), dir);
+        book_orbit_request_sync(false, s_path);
+    }
     uint8_t full_pages = app_settings_reader_full_pages();
     if (full_pages) ++s_turns;
     else s_turns = 0;
@@ -8970,6 +9009,11 @@ static void book_on_exit(app_ctx_t* ctx) {
     s_pressed_control = -1;
     s_reader_slider = -1;
     save_progress();
+    // 退出书籍：session 缓冲落盘并立即请求一轮同步（翻页触发的自动轮可能还在冷却内）。
+    if (s_path[0]) {
+        book_orbit_flush_events();
+        book_orbit_request_sync(true, s_path);
+    }
     s_reader_return_home = false;
     ui_reader_background_release();
     free(s_backgrounds); s_backgrounds = NULL; s_background_count = 0;
