@@ -12,12 +12,17 @@
 extern const app_desc_t app_book;
 extern const app_desc_t app_image;
 extern const app_desc_t app_cloud_sync;
+#if KIIKO_BOARD_METALIO47
+extern const app_desc_t app_book_orbit;
+#endif
 extern const app_desc_t app_dashboard;
 extern const app_desc_t app_files;
 extern const app_desc_t app_device_settings;
 
 // 正式产品页面清单；工厂测试与历史示例不进入用户导航。
 // Production page registry; factory diagnostics and legacy examples are not user-navigable.
+// BookOrbit 书库页依赖 orbit 设置（板级副本目前仅 metalio 提供），暂不进 Pico 清单。
+// The catalog page needs the orbit settings UI (board copies only provide it on metalio).
 static const app_desc_t* const s_apps[] = {
     &app_dashboard,
     &app_book,
@@ -25,6 +30,9 @@ static const app_desc_t* const s_apps[] = {
     &app_device_settings,
     &app_image,
     &app_cloud_sync,
+#if KIIKO_BOARD_METALIO47
+    &app_book_orbit,
+#endif
 };
 
 #define APP_COUNT ((int)(sizeof(s_apps) / sizeof(s_apps[0])))

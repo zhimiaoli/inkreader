@@ -6,12 +6,24 @@ stage=out/'source';stage.mkdir(exist_ok=True)
 runpy.run_path(str(r/'src/prepare_host.py'))
 tree=ast.parse((r/'build.py').read_text())
 sources=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='sources' for t in n.targets))
-fw=Path(os.environ.get('PICO_SIM_FIRMWARE',r/'firmware'));inc=[web/'shim',r/'shim',fw/'main']+[fw/'main'/d for d in ['app','apps','ui','font','book','factory']]+list((fw/'components').glob('*/include'))+list((fw/'components').iterdir())+[web/'vendor',web/'vendor/zlib']
+fw=Path(os.environ.get('PICO_SIM_FIRMWARE',r/'firmware'));mc=fw/'managed_components';inc=[web/'shim',r/'shim',fw/'main']+[fw/'main'/d for d in ['app','apps','ui','font','book','factory']]+list((fw/'components').glob('*/include'))+list((fw/'components').iterdir())+[fw/'components'/'jpegdec'/'src',mc/'espressif__esp_jpeg'/'include',mc/'espressif__esp_jpeg'/'tjpgd',mc/'espressif__libpng'/'libpng',mc/'espressif__libpng'/'libpng'/'scripts',mc/'defensiblelogic__lowzag'/'include',web/'vendor',web/'vendor/zlib']
+comp_sources={'SEARCH':fw/'components/read_pico_search/read_pico_search.c',
+ 'JPEGDEC':fw/'components/jpegdec/src/JPEGDEC.cpp','JPEGSHIM':fw/'components/jpegdec/src/jpegdec_shim.cpp',
+ 'ESPJPEG':[mc/'espressif__esp_jpeg/jpeg_decoder.c',mc/'espressif__esp_jpeg/jpeg_default_huffman_table.c',mc/'espressif__esp_jpeg/tjpgd/tjpgd.c'],
+ 'LOWZAG':[mc/'defensiblelogic__lowzag/src/lowzag.c',mc/'defensiblelogic__lowzag/src/lowzag_mem.c'],
+ 'LIBPNG':[mc/'espressif__libpng/libpng/png.c',mc/'espressif__libpng/libpng/pngerror.c',mc/'espressif__libpng/libpng/pngget.c',mc/'espressif__libpng/libpng/pngmem.c',mc/'espressif__libpng/libpng/pngread.c',mc/'espressif__libpng/libpng/pngrio.c',mc/'espressif__libpng/libpng/pngrtran.c',mc/'espressif__libpng/libpng/pngrutil.c',mc/'espressif__libpng/libpng/pngset.c',mc/'espressif__libpng/libpng/pngtrans.c']}
 emcc=Path(os.environ.get('EMCC',r/'build/toolchains/emsdk/upstream/emscripten/emcc'))
-flags=['-std=gnu11','-O2','-Wno-format','-Wno-unused-value','-Wno-incompatible-pointer-types','-Wno-implicit-const-int-float-conversion','-include',str(r/'shim/host.h')]+[str(x) for p in inc for x in ['-I',p]]
+flags=['-std=gnu11','-O2','-Wno-format','-Wno-unused-value','-Wno-incompatible-pointer-types','-Wno-implicit-const-int-float-conversion','-DKIIKO_BOARD_METALIO47=0','-D__LINUX__','-include',str(r/'shim/host.h')]+[str(x) for p in inc for x in ['-I',p]]
 objects=[]
 for name in sources:
-    src=fw/'components/read_pico_search/read_pico_search.c' if name=='SEARCH' else fw/'main'/name
+    if name in comp_sources:
+        entries=comp_sources[name] if isinstance(comp_sources[name],list) else [comp_sources[name]]
+        for src in entries:
+            if not src.exists():continue
+            obj=stage/(src.stem+'.o');std=['-std=gnu++17'] if src.suffix=='.cpp' else []
+            subprocess.run([str(emcc),*flags,*std,'-c',str(src),'-o',str(obj)],check=True);objects.append(str(obj))
+        continue
+    src=fw/'main'/name
     if name=='apps/app_book.c':src=r/'src/book_preview.c'
     if not src.exists():continue
     text=src.read_text()
@@ -22,7 +34,7 @@ for name in sources:
     if name=='apps/app_book.c':text+='\nint sim_book_busy(void){return s_scan_pending;}\nint sim_book_view(void){return s_view;}\nint sim_book_panel(void){return s_reader_panel;}\nint sim_reader_target(int i){if(i<0||i>5)return -1;EpdRect r=reader_font_card(i);return ((r.x+r.width/2)<<16)|(r.y+r.height/2);}\n'
     target=stage/(name.replace('/','_')+'.c');target.write_text(text)
     obj=stage/(target.stem+'.o');subprocess.run([str(emcc),*flags,'-c',str(target),'-o',str(obj)],check=True);objects.append(str(obj))
-for src in [r/'src/platform.c',r/'src/services.c',r/'src/engine.c',web/'src/cover.c',web/'src/assets.c',web/'src/crypto.c',web/'vendor/sha256.c']:
+for src in [r/'src/platform.c',r/'src/services.c',r/'src/engine.c',web/'src/assets.c',web/'src/crypto.c',web/'vendor/sha256.c']:
     obj=stage/(src.stem+'.o');extra=['-DSIM_PLATFORM=1'] if src.name in ['platform.c','assets.c'] else []
     subprocess.run([str(emcc),*flags,*extra,'-c',str(src),'-o',str(obj)],check=True);objects.append(str(obj))
 card=out/'data/card/books';card.mkdir(parents=True,exist_ok=True)
