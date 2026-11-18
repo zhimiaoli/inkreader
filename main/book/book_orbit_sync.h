@@ -114,6 +114,10 @@ bool book_orbit_parse_datetime(const char* datetime, uint32_t* out_epoch_seconds
 /// Server identity key md5(datetime | pos0), 32 lowercase hex characters plus terminator.
 bool book_orbit_annotation_key(const char* datetime, const char* pos0, char out[33]);
 
+/// KOReader 认证 userkey = md5(密码)，33 字节（32 hex + 终止符）。
+/// KOReader auth userkey = md5(password), 33 bytes (32 hex plus terminator).
+bool book_orbit_userkey(const char* password, char out[33]);
+
 /// KOReader 部分 MD5 文档哈希：偏移 0,1024,4096,...,2^30 各读 1024 字节拼接求 MD5。
 /// KOReader partial-MD5 document hash: 1024 bytes at offsets 0,1024,4096,...,2^30.
 /// out 接收 33 字节（32 hex + 终止符）；文件不可读返回 false。

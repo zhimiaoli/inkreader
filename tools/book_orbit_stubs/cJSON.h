@@ -8,6 +8,11 @@
 typedef int esp_err_t;
 #define ESP_OK 0
 #define ESP_FAIL -1
+#define ESP_ERR_NO_MEM 0x101
+#define ESP_ERR_INVALID_ARG 0x102
+#define ESP_ERR_INVALID_STATE 0x103
+#define ESP_ERR_TIMEOUT 0x107
+#define ESP_ERR_HTTP_EAGAIN 0x5012
 
 /* cJSON — 仅声明 */
 typedef struct cJSON {
@@ -20,6 +25,7 @@ cJSON *cJSON_Parse(const char *value);
 void cJSON_Delete(cJSON *item);
 cJSON *cJSON_GetObjectItem(const cJSON *object, const char *string);
 cJSON *cJSON_GetArrayItem(const cJSON *array, int index);
+int cJSON_GetArraySize(const cJSON *array);
 bool cJSON_IsString(const cJSON *item);
 bool cJSON_IsNumber(const cJSON *item);
 bool cJSON_IsBool(const cJSON *item);

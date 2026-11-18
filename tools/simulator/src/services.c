@@ -114,3 +114,20 @@ void rp_boot_mark(const char*n){}
 const EpdWaveform *display_main_bw_waveform(void){return &E0470_WAVEFORM;}
 const EpdWaveform *display_main_gray_waveform(void){return &E0470_WAVEFORM;}
 const EpdWaveform *display_main_normal_waveform(void){return &E0470_WAVEFORM;}
+const EpdWaveform *display_main_fast_white_waveform(const EpdWaveform*source,enum EpdDrawMode mode){(void)source;(void)mode;return &E0470_WAVEFORM;}
+const EpdWaveform *display_settings_motion_waveform(void){return &E0470_WAVEFORM;}
+const EpdWaveform *display_settings_scroll_waveform(void){return &E0470_WAVEFORM;}
+const EpdWaveform *display_reader_soft_turn_waveform(void){return &E0470_WAVEFORM;}
+enum EpdDrawError update_display_reader_area(EpdiyHighlevelState*h,const EpdWaveform*w,enum EpdDrawMode m,EpdRect a,bool f){(void)h;(void)w;(void)m;(void)a;(void)f;return 0;}
+enum EpdDrawError update_display_text_turn(EpdiyHighlevelState*h,EpdRect a,e0470_turn_dir_t d){(void)h;(void)a;(void)d;return 0;}
+void continuous_du_reset(void){}
+bool app_touch_input_pending(app_ctx_t*c){(void)c;return false;}
+void app_restart_host(void){esp_restart();}
+void app_transfer_request_cover_wifi(void){}
+bool read_pico_sd_io_ready(void){return true;}
+esp_err_t read_pico_sd_start_space_refresh(void){return 0;}
+esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t*c){(void)c;return ESP_ERR_NOT_SUPPORTED;}
+void read_pico_transfer_stop(void){}
+bool read_pico_transfer_try_stop_if_idle(void){return true;}
+void ble_pt_cancel_recent(void){}
+void ble_pt_reconnect_recent(void){}

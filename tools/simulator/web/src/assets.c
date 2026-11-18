@@ -28,3 +28,5 @@ void sim_seed(void){app_settings_init();char last[288];if(book_progress_last_pat
  const char*quote="阅读不必匆忙，留一点时间给自己。";html_text_t text={.utf8=(char*)quote,.len=strlen(quote)};book_excerpt_offer(paths[2],0,&text);
  book_ticket_record((uint32_t)(book_ticket_local_time_ms()/UINT64_C(86400000)),480000,3);
 }
+
+void sim_frame_write(const uint8_t*frame,const char*path){(void)frame;(void)path;}

@@ -168,6 +168,12 @@ static void md5_text_hex(const char *text, size_t len, char out[33]) {
     md5_hex(digest, out);
 }
 
+bool book_orbit_userkey(const char *password, char out[33]) {
+    if (!password || !out) return false;
+    md5_text_hex(password, strlen(password), out);
+    return true;
+}
+
 static void orbit_device_id(char out[32]) {
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
