@@ -109,6 +109,33 @@ int book_layout_page_note_marker_count(size_t page);
 /// 取本页第 i 个文字注号：注表下标与行内矩形；越界返回 false。/ Text marker i of this page: note index and inline rect; false when out of range.
 bool book_layout_page_note_marker_rect(size_t page, int i, int* note, int* x, int* y, int* w, int* h);
 
+/// 划线区间：源字节 [start,end)。/ Highlight span over source bytes [start,end).
+typedef struct { uint32_t start, end; } book_layout_highlight_span_t;
+/// 注册划线区间（借用，按 start 升序；重排/释放后失效）。draw_page 会为相交行画下划线。
+/// Register highlight spans (borrowed, sorted by start; invalidated by rebuild/free).
+/// draw_page underlines every intersecting line.
+void book_layout_set_highlights(const book_layout_highlight_span_t* spans, size_t count);
+/// 本页文字行数（横排）；竖排不记录。/ Text line count of this page (horizontal only).
+int book_layout_page_line_count(size_t page);
+/// 取本页第 i 行：行矩形、源字节范围；越界返回 false。行矩形 y 已含顶部留白。
+/// Line i of this page: rect and source byte range; the rect y includes top padding.
+bool book_layout_page_line_at(size_t page, int i, EpdRect* rect, size_t* start, size_t* end);
+/// 页内命中一个词：返回词的源字节范围与词矩形；需要与排版相同的 rect/px。
+/// Hit one word on a page: word source range and rect; requires the build-time rect/px.
+bool book_layout_hit_word(size_t page, EpdRect rect, int px, int x, int y, size_t* start,
+                          size_t* end, EpdRect* word_rect);
+/// 行内源字节偏移的 x 与行上下沿；选区拖柄与划线渲染用。
+/// x of a source offset within its line plus the line's top/bottom, for drag handles and
+/// highlight rendering.
+bool book_layout_offset_x(size_t page, EpdRect rect, int px, size_t off, int* x, int* y_top,
+                          int* y_bottom);
+/// 排版签名：几何与排版参数哈希；重排后变化。0 表示无布局。
+/// Layout signature: hash of geometry and typography settings; changes on rebuild.
+/// 0 means no layout.
+uint32_t book_layout_signature(void);
+/// 提取源文本区间（截断到 UTF-8 边界）。/ Extract a source text range (UTF-8 safe trim).
+bool book_layout_text_range(size_t start, size_t end, char* out, size_t cap);
+
 int book_layout_page_image(size_t page);
 /// 布局代次，重排或释放后改变，用于使页内位图缓存失效。/ Layout generation changes after rebuild/free, invalidating page bitmap caches.
 uint32_t book_layout_generation(void);

@@ -177,7 +177,7 @@ esp_err_t nvs_set_u8(nvs_handle_t h, const char *key, uint8_t value) {
 #ifdef NVS_KEY_PIN_GRACE
     if (!strcmp(key,NVS_KEY_PIN_GRACE)) { loaded_grace=value; has_grace=true; }
 #endif
- if(!strcmp(key,NVS_KEY_READER_TURN))loaded_turn=value; (void)h; if(test_full_storage&&!strcmp(key,NVS_KEY_READER_FULL))loaded_full_pages=value; if(!strcmp(key,NVS_KEY_BOOK_PARA)){loaded_para=value;has_para=true;} if(!strcmp(key,NVS_KEY_BOOK_TRACK)){loaded_tracking=value;has_tracking=true;} if(!strcmp(key,NVS_KEY_BOOK_WEIGHT_FINE)){loaded_fine=value;has_fine=true;} if(!strcmp(key,NVS_KEY_BOOK_AA)){loaded_aa=value;has_aa=true;} if(!strcmp(key,NVS_KEY_READER_KEYS_V2))keys_v2=value==1; if(!strcmp(key,NVS_KEY_BOOK_WEIGHT)){loaded_weight=value;has_weight=true;} if(!strcmp(key,NVS_KEY_BOOK_INDENT_ADJUST)){loaded_adjust=value;has_adjust=true;} if(!strcmp(key,NVS_KEY_SHELF_STYLE))loaded_shelf=value; if(!strcmp(key,NVS_KEY_SHELF_V22))loaded_shelf_v22=value==1; if(!strcmp(key,NVS_KEY_LOCK_STYLE))loaded_lock=value; if(!strcmp(key,NVS_KEY_HOLD_ACTION)){loaded_hold=value;has_hold=true;} for(unsigned i=0;i<3;++i) if(!strcmp(key,s_reader_key_names[i])){loaded_keys[i]=value;has_keys[i]=true;} if (!strcmp(key, NVS_KEY_MAIN_REFRESH)) {has_main_mode=true;loaded_main_mode=value;} if (!strcmp(key, "ui_fast")) test_loaded_fast=value; return ESP_OK; }
+ if(!strcmp(key,NVS_KEY_READER_TURN)){loaded_turn=value;} (void)h; if(test_full_storage&&!strcmp(key,NVS_KEY_READER_FULL))loaded_full_pages=value; if(!strcmp(key,NVS_KEY_BOOK_PARA)){loaded_para=value;has_para=true;} if(!strcmp(key,NVS_KEY_BOOK_TRACK)){loaded_tracking=value;has_tracking=true;} if(!strcmp(key,NVS_KEY_BOOK_WEIGHT_FINE)){loaded_fine=value;has_fine=true;} if(!strcmp(key,NVS_KEY_BOOK_AA)){loaded_aa=value;has_aa=true;} if(!strcmp(key,NVS_KEY_READER_KEYS_V2))keys_v2=value==1; if(!strcmp(key,NVS_KEY_BOOK_WEIGHT)){loaded_weight=value;has_weight=true;} if(!strcmp(key,NVS_KEY_BOOK_INDENT_ADJUST)){loaded_adjust=value;has_adjust=true;} if(!strcmp(key,NVS_KEY_SHELF_STYLE))loaded_shelf=value; if(!strcmp(key,NVS_KEY_SHELF_V22))loaded_shelf_v22=value==1; if(!strcmp(key,NVS_KEY_LOCK_STYLE))loaded_lock=value; if(!strcmp(key,NVS_KEY_HOLD_ACTION)){loaded_hold=value;has_hold=true;} for(unsigned i=0;i<3;++i) if(!strcmp(key,s_reader_key_names[i])){loaded_keys[i]=value;has_keys[i]=true;} if (!strcmp(key, NVS_KEY_MAIN_REFRESH)) {has_main_mode=true;loaded_main_mode=value;} if (!strcmp(key, "ui_fast")) test_loaded_fast=value; return ESP_OK; }
 esp_err_t nvs_get_str(nvs_handle_t h, const char *key, char *value, size_t *size) {
  (void)h;
  if(!strcmp(key,NVS_KEY_BOOKS_DIR)||!strcmp(key,NVS_KEY_FONTS_DIR)) {
@@ -535,7 +535,7 @@ int main(void) {
     /* 旧格式没有背景和首页组件块。/ Legacy tails omit background and Home blocks. */
     memmove(v11_tail+sizeof(settings_backup_wifi_t), v11_tail+sizeof(settings_backup_wifi_t)+(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t)), v11_tail_bytes-sizeof(settings_backup_wifi_t)-(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t)));
     v11_tail_bytes-=(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t));v12_end-=(long)(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t));
-    memmove(v11_tail+v11_tail_bytes-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)),v11_tail+v11_tail_bytes-8,8);v11_tail_bytes-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));v12_end-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));
+    memmove(v11_tail+v11_tail_bytes-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)),v11_tail+v11_tail_bytes-8,8);v11_tail_bytes-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));v12_end-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));
     memcpy(legacy_header.magic,"PICOSETB",8);legacy_header.flags[BK_TRACKING]=4;backup_seal(&legacy_header);
     uint32_t v11_hash=backup_shutdown_checksum(&legacy_header,legacy_ext[0],legacy_ext[1],legacy_ext[2]);
     for(int i=0;i<4;++i)legacy_ext[i+3]=(uint8_t)(v11_hash>>(8*i));
@@ -566,7 +566,7 @@ int main(void) {
     /* 旧格式没有背景和首页组件块。/ Legacy tails omit background and Home blocks. */
     memmove(v10_tail+sizeof(settings_backup_wifi_t), v10_tail+sizeof(settings_backup_wifi_t)+(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t)), v10_tail_size-sizeof(settings_backup_wifi_t)-(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t)));
     v10_tail_size-=(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t));v11_end-=(long)(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t));
-    memmove(v10_tail+v10_tail_size-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)),v10_tail+v10_tail_size-8,8);v10_tail_size-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));v11_end-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));
+    memmove(v10_tail+v10_tail_size-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)),v10_tail+v10_tail_size-8,8);v10_tail_size-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));v11_end-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));
     saved_keys.actions[0]=APP_READER_KEY_HOME;saved_keys.actions[1]=APP_READER_KEY_FULLSCREEN;saved_keys.actions[2]=APP_READER_KEY_REFRESH;
     uint32_t missing_tools_hash=backup_keys_checksum(&saved_keys);
     for(int i=0;i<4;++i)saved_keys.checksum[i]=(uint8_t)(missing_tools_hash>>(i*8));
@@ -606,7 +606,7 @@ int main(void) {
     /* 旧格式没有背景和首页组件块。/ Legacy tails omit background and Home blocks. */
     memmove(tail+sizeof(settings_backup_wifi_t), tail+sizeof(settings_backup_wifi_t)+(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t)), tail_size-sizeof(settings_backup_wifi_t)-(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t)));
     tail_size-=(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t));file_end-=(long)(2*sizeof(settings_backup_background_t)+sizeof(settings_backup_home_t));
-    memmove(tail+tail_size-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)),tail+tail_size-8,8);tail_size-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));file_end-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));
+    memmove(tail+tail_size-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)),tail+tail_size-8,8);tail_size-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));file_end-=(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));
     rewind(saved);assert(fwrite(&legacy_header,1,sizeof(legacy_header),saved)==sizeof(legacy_header));
     assert(fwrite(legacy_ext,1,sizeof(legacy_ext),saved)==sizeof(legacy_ext));
     assert(fwrite(&saved_profile,1,sizeof(saved_profile),saved)==sizeof(saved_profile));
@@ -657,6 +657,62 @@ int main(void) {
            s_reader_full_pages == 0 && app_settings_book_reading_line_offset() == -8 &&
            s_staged_shutdown);
     assert(!strcmp(saved_wifi.ssid, "Home_2.4G"));
+
+    /* v27：Kosync 与 OPDS 账号块随备份往返。/ v27: the Kosync + OPDS block round-trips. */
+    app_settings_set_kosync_server("kosync.example.com");
+    app_settings_set_kosync_user("reader");
+    app_settings_set_kosync_password("pw12345");
+    app_settings_set_opds_server("books.example.net");
+    app_settings_set_opds_user("opds_reader");
+    app_settings_set_opds_password("opds_pw");
+    assert(app_settings_backup_save() == ESP_OK);
+    s_kosync_server[0] = 0; s_kosync_user[0] = 0; s_kosync_password[0] = 0;
+    s_opds_server[0] = 0; s_opds_user[0] = 0; s_opds_password[0] = 0;
+    assert(app_settings_backup_restore() == ESP_OK);
+    assert(!strcmp(s_kosync_server, "kosync.example.com") &&
+           !strcmp(s_kosync_user, "reader") && !strcmp(s_kosync_password, "pw12345"));
+    assert(!strcmp(s_opds_server, "books.example.net") &&
+           !strcmp(s_opds_user, "opds_reader") && !strcmp(s_opds_password, "opds_pw"));
+
+    /* v26 备份没有账号块：恢复成功且不覆盖设备上的 Kosync/OPDS 凭据。 */
+    /* v26 backups carry no accounts block: restore succeeds and leaves the device's
+       Kosync/OPDS credentials untouched. */
+    FILE *strip = fopen(BACKUP_FILE, "r+b");
+    assert(strip);
+    assert(fseek(strip, 0, SEEK_END) == 0);
+    long v27_end = ftell(strip);
+    long kosync_at = v27_end - (long)(sizeof(settings_backup_accounts_t) + 8);
+    assert(kosync_at > 0);
+    uint8_t history_marker[8];
+    assert(fseek(strip, kosync_at + (long)sizeof(settings_backup_accounts_t), SEEK_SET) == 0);
+    assert(fread(history_marker, 1, sizeof(history_marker), strip) == sizeof(history_marker));
+    assert(fseek(strip, kosync_at, SEEK_SET) == 0);
+    assert(fwrite(history_marker, 1, sizeof(history_marker), strip) == sizeof(history_marker));
+    settings_backup_v1_t v26_header;
+    uint8_t v26_ext[7];
+    settings_backup_profile_t v26_profile;
+    rewind(strip);
+    assert(fread(&v26_header, 1, sizeof(v26_header), strip) == sizeof(v26_header));
+    assert(fread(v26_ext, 1, sizeof(v26_ext), strip) == sizeof(v26_ext));
+    assert(fread(&v26_profile, 1, sizeof(v26_profile), strip) == sizeof(v26_profile));
+    memcpy(v26_header.magic, "PICOSETQ", sizeof(v26_header.magic));
+    backup_seal(&v26_header);
+    /* 换版本后扩展与 profile 校验和依赖整个 header，需按 v26 重算。 */
+    /* Extension and profile checksums cover the whole header; recompute them for v26. */
+    uint32_t v26_hash = backup_shutdown_checksum(&v26_header, v26_ext[0], v26_ext[1], v26_ext[2]);
+    for (int i = 0; i < 4; ++i) v26_ext[i + 3] = (uint8_t)(v26_hash >> (8 * i));
+    v26_hash = backup_profile_checksum(&v26_header, v26_ext[0], v26_ext[1], v26_ext[2], &v26_profile);
+    for (int i = 0; i < 4; ++i) v26_profile.checksum[i] = (uint8_t)(v26_hash >> (8 * i));
+    rewind(strip);
+    assert(fwrite(&v26_header, 1, sizeof(v26_header), strip) == sizeof(v26_header));
+    assert(fwrite(v26_ext, 1, sizeof(v26_ext), strip) == sizeof(v26_ext));
+    assert(fwrite(&v26_profile, 1, sizeof(v26_profile), strip) == sizeof(v26_profile));
+    assert(fflush(strip) == 0 &&
+           ftruncate(fileno(strip), v27_end - (long)sizeof(settings_backup_accounts_t)) == 0);
+    assert(fclose(strip) == 0);
+    s_kosync_server[0] = 0;
+    assert(app_settings_backup_restore() == ESP_OK);
+    assert(!s_kosync_server[0] && !strcmp(s_kosync_user, "reader"));
 
     /* PICOSET3 backups predate the shutdown choice and restore the safe off default. */
     FILE *file = fopen(BACKUP_FILE, "rb");
@@ -831,7 +887,7 @@ int main(void) {
         rewind(legacy_file);assert(fwrite(&header,1,sizeof(header),legacy_file)==sizeof(header));
         assert(fwrite(ext,1,sizeof(ext),legacy_file)==sizeof(ext));
         assert(fwrite(&profile,1,sizeof(profile),legacy_file)==sizeof(profile)&&fclose(legacy_file)==0);
-        FILE *strip=fopen(BACKUP_FILE,"r+b");assert(strip);fseek(strip,-8,SEEK_END);unsigned char hist[8];assert(fread(hist,1,8,strip)==8);long old_end=ftell(strip);fseek(strip,old_end-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)),SEEK_SET);assert(fwrite(hist,1,8,strip)==8&&fflush(strip)==0&&ftruncate(fileno(strip),old_end-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)))==0&&fclose(strip)==0);
+        FILE *strip=fopen(BACKUP_FILE,"r+b");assert(strip);fseek(strip,-8,SEEK_END);unsigned char hist[8];assert(fread(hist,1,8,strip)==8);long old_end=ftell(strip);fseek(strip,old_end-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)),SEEK_SET);assert(fwrite(hist,1,8,strip)==8&&fflush(strip)==0&&ftruncate(fileno(strip),old_end-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)))==0&&fclose(strip)==0);
         s_book_tracking=255;assert(app_settings_backup_restore()==ESP_OK);
         int px=(int)old-4;if(px>15)px=15;
         assert(s_book_tracking==px-APP_BOOK_TRACK_MIN&&loaded_tracking==192+s_book_tracking);
@@ -942,7 +998,7 @@ int main(void) {
         assert(fwrite(&profile, 1, sizeof(profile), f) == sizeof(profile) && fclose(f) == 0);
         assert(app_settings_set_book_reading_line_full(true));
         int before = commit_count;
-        FILE *strip2=fopen(BACKUP_FILE,"r+b");assert(strip2);fseek(strip2,-8,SEEK_END);unsigned char hist2[8];assert(fread(hist2,1,8,strip2)==8);long old_end2=ftell(strip2);fseek(strip2,old_end2-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)),SEEK_SET);assert(fwrite(hist2,1,8,strip2)==8&&fflush(strip2)==0&&ftruncate(fileno(strip2),old_end2-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)))==0&&fclose(strip2)==0);
+        FILE *strip2=fopen(BACKUP_FILE,"r+b");assert(strip2);fseek(strip2,-8,SEEK_END);unsigned char hist2[8];assert(fread(hist2,1,8,strip2)==8);long old_end2=ftell(strip2);fseek(strip2,old_end2-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)),SEEK_SET);assert(fwrite(hist2,1,8,strip2)==8&&fflush(strip2)==0&&ftruncate(fileno(strip2),old_end2-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t)))==0&&fclose(strip2)==0);
         bool valid = code <= (v == 20 ? 2 : 5);
         assert(app_settings_backup_restore() == (valid ? ESP_OK : ESP_ERR_INVALID_RESPONSE));
         if (valid) assert(app_settings_book_reading_line() == code % 3 && app_settings_book_reading_line_full() == (v == 21 && code >= 3));
@@ -1012,7 +1068,7 @@ int main(void) {
     assert(app_settings_set_reader_control(RC_BOTTOM_CENTER,RC_EFFECT));
     assert(app_settings_set_reader_auto_seconds(7));
     assert(app_settings_backup_save()==ESP_OK);
-    FILE*cf=fopen(BACKUP_FILE,"rb");assert(cf);settings_backup_v1_t ch;assert(fread(&ch,1,sizeof(ch),cf)==sizeof(ch)&&backup_version(&ch)==25);fclose(cf);
+    FILE*cf=fopen(BACKUP_FILE,"rb");assert(cf);settings_backup_v1_t ch;assert(fread(&ch,1,sizeof(ch),cf)==sizeof(ch)&&backup_version(&ch)==27);fclose(cf);
     assert(app_settings_set_reader_control(RC_BOTTOM_CENTER,RC_NONE));assert(app_settings_set_reader_auto_seconds(10));
     assert(app_settings_backup_restore()==ESP_OK);assert(app_settings_reader_controls()->actions[RC_BOTTOM_CENTER]==RC_EFFECT&&reader_controls_seconds(app_settings_reader_controls())==7);
     assert(app_settings_set_reader_control(RC_BOTTOM_CENTER,RC_BOOKMARK));
@@ -1020,7 +1076,7 @@ int main(void) {
     // 中文：新块CRC损坏时不写入任何NVS；删去新块后旧v23依然恢复并使用默认手势。
     // English: Corrupt new blocks never commit; legacy v23 restores with safe gesture defaults.
     cf=fopen(BACKUP_FILE,"rb");assert(cf);fseek(cf,0,SEEK_END);long length=ftell(cf);rewind(cf);unsigned char*data=malloc(length);assert(fread(data,1,length,cf)==(size_t)length);fclose(cf);
-    long at=length-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t));data[at+1]^=1;
+    long at=length-8-(sizeof(reader_controls_config_t)+sizeof(settings_backup_shelf_t)+sizeof(settings_backup_orbit_t)+sizeof(settings_backup_accounts_t));data[at+1]^=1;
     cf=fopen(BACKUP_FILE,"wb");assert(cf);assert(fwrite(data,1,length,cf)==(size_t)length);fclose(cf);
     int rc_commits_before=commit_count;assert(app_settings_backup_restore()==ESP_ERR_INVALID_RESPONSE&&commit_count==rc_commits_before);assert(app_settings_reader_controls()->actions[RC_BOTTOM_CENTER]==RC_BOOKMARK);
     settings_backup_v1_t*old=(void*)data;memcpy(old->magic,"PICOSETN",8);backup_seal(old);
@@ -1045,7 +1101,7 @@ int main(void) {
     assert(!app_settings_try_shelf_order(8));
     // New block corruption is rejected before the single restore transaction.
     {FILE*input=fopen(BACKUP_FILE,"rb");assert(input);fseek(input,0,SEEK_END);long bytes=ftell(input);rewind(input);unsigned char*all=malloc(bytes);assert(fread(all,1,bytes,input)==(size_t)bytes);fclose(input);
-     long shelf_at=bytes-8-sizeof(settings_backup_shelf_t);all[shelf_at+1]^=1;
+     long shelf_at=bytes-8-sizeof(settings_backup_shelf_t)-sizeof(settings_backup_orbit_t)-sizeof(settings_backup_accounts_t);all[shelf_at+1]^=1;
      FILE*output=fopen(BACKUP_FILE,"wb");assert(output);assert(fwrite(all,1,bytes,output)==(size_t)bytes&&fclose(output)==0);
      int before_commit=commit_count;assert(app_settings_backup_restore()==ESP_ERR_INVALID_RESPONSE&&commit_count==before_commit);
      // V24 has gesture controls but no shelf block: preserve its controls and use safe shelf defaults.

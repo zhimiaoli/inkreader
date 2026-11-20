@@ -6,14 +6,34 @@ stage=out/'source';stage.mkdir(exist_ok=True)
 runpy.run_path(str(r/'src/prepare_host.py'))
 tree=ast.parse((r/'build.py').read_text())
 sources=next(ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='sources' for t in n.targets))
-fw=Path(os.environ.get('PICO_SIM_FIRMWARE',r/'firmware'));mc=fw/'managed_components';inc=[web/'shim',r/'shim',fw/'main']+[fw/'main'/d for d in ['app','apps','ui','font','book','factory']]+list((fw/'components').glob('*/include'))+list((fw/'components').iterdir())+[fw/'components'/'jpegdec'/'src',mc/'espressif__esp_jpeg'/'include',mc/'espressif__esp_jpeg'/'tjpgd',mc/'espressif__libpng'/'libpng',mc/'espressif__libpng'/'libpng'/'scripts',mc/'defensiblelogic__lowzag'/'include',web/'vendor',web/'vendor/zlib']
+# Board selection: SIM_METALIO47=1 builds the S31 (metalio47) UI against its source view.
+metalio=os.environ.get('SIM_METALIO47','0')=='1'
+if metalio: sources=list(sources)+['book/book_clipping.c','book/book_orbit_sync.c','book/reader_page_cache.c','book/metalio_jpeg.c','display.c']
+fw=Path(os.environ.get('PICO_SIM_FIRMWARE',r/'firmware'));mc=fw/'managed_components'
+# Board selection: SIM_METALIO47=1 builds the S31 (metalio47) UI against its source view.
+metalio=os.environ.get('SIM_METALIO47','0')=='1'
+# pnglibconf.h is generated into the board build tree during IDF builds; the
+# component ships only the prebuilt template. Prefer the generated copy.
+pngconf=None
+for cand in ([r.parent.parent/'build'/'boards'/'metalio47'/'build'/'esp-idf'/'espressif__libpng'/'libpng'] if metalio else [r.parent.parent/'build'/'boards'/'pico'/'build'/'esp-idf'/'espressif__libpng'/'libpng']):
+    if (cand/'pnglibconf.h').exists():pngconf=cand;break
+lowzag=mc/'defensiblelogic__lowzag'/'include'
+inc=[web/'shim',r/'shim',fw/'main']+[fw/'main'/d for d in ['app','apps','ui','font','book','factory']]+list((fw/'components').glob('*/include'))+list((fw/'components').iterdir())+[fw/'components'/'jpegdec'/'src',mc/'espressif__esp_jpeg'/'include',mc/'espressif__esp_jpeg'/'tjpgd',mc/'espressif__libpng'/'libpng',mc/'espressif__libpng'/'libpng'/'scripts',mc/'espressif__cjson'/'cJSON',mc/'espressif__qrcode'/'include',web/'vendor',web/'vendor/zlib']+[lowzag if lowzag.exists() else r.parent.parent/'build'/'boards'/'pico'/'source'/'managed_components'/'defensiblelogic__lowzag'/'include']+([pngconf] if pngconf else [mc/'espressif__libpng'/'libpng'/'scripts'])
 comp_sources={'SEARCH':fw/'components/read_pico_search/read_pico_search.c',
  'JPEGDEC':fw/'components/jpegdec/src/JPEGDEC.cpp','JPEGSHIM':fw/'components/jpegdec/src/jpegdec_shim.cpp',
  'ESPJPEG':[mc/'espressif__esp_jpeg/jpeg_decoder.c',mc/'espressif__esp_jpeg/jpeg_default_huffman_table.c',mc/'espressif__esp_jpeg/tjpgd/tjpgd.c'],
- 'LOWZAG':[mc/'defensiblelogic__lowzag/src/lowzag.c',mc/'defensiblelogic__lowzag/src/lowzag_mem.c'],
+ 'LOWZAG':[mc/'defensiblelogic__lowzag/src/lowzag.c',mc/'defensiblelogic__lowzag/src/lowzag_mem.c',r.parent.parent/'build'/'boards'/'pico'/'source'/'managed_components'/'defensiblelogic__lowzag'/'src'/'lowzag.c',r.parent.parent/'build'/'boards'/'pico'/'source'/'managed_components'/'defensiblelogic__lowzag'/'src'/'lowzag_mem.c'],
  'LIBPNG':[mc/'espressif__libpng/libpng/png.c',mc/'espressif__libpng/libpng/pngerror.c',mc/'espressif__libpng/libpng/pngget.c',mc/'espressif__libpng/libpng/pngmem.c',mc/'espressif__libpng/libpng/pngread.c',mc/'espressif__libpng/libpng/pngrio.c',mc/'espressif__libpng/libpng/pngrtran.c',mc/'espressif__libpng/libpng/pngrutil.c',mc/'espressif__libpng/libpng/pngset.c',mc/'espressif__libpng/libpng/pngtrans.c']}
+if metalio:
+    # S31 covers decode through libjpeg-turbo; the IDF build tree carries the
+    # generated jconfig.h/jconfigint.h the component's CMake produces.
+    ljsrc=mc/'espressif__libjpeg-turbo'/'libjpeg-turbo'/'src'
+    ljcfg=r.parent.parent/'build'/'boards'/'metalio47'/'build'/'esp-idf'/'espressif__libjpeg-turbo'/'libjpeg-turbo-build'
+    inc+=[ljsrc,ljcfg,fw/'boards'/'metalio47'/'tests'/'tools'/'display_host_stubs']
+    _lj_skip={'cjpeg.c','djpeg.c','example.c','cdjpeg.c','jcstest.c','rdjpgcom.c','wrjpgcom.c','tjbench.c','transupp.c','jpeg_nbits.c'}
+    comp_sources['LIBJPEG']=[p for p in sorted(ljsrc.glob('*.c')) if p.name not in _lj_skip]
 emcc=Path(os.environ.get('EMCC',r/'build/toolchains/emsdk/upstream/emscripten/emcc'))
-flags=['-std=gnu11','-O2','-Wno-format','-Wno-unused-value','-Wno-incompatible-pointer-types','-Wno-implicit-const-int-float-conversion','-DKIIKO_BOARD_METALIO47=0','-D__LINUX__','-include',str(r/'shim/host.h')]+[str(x) for p in inc for x in ['-I',p]]
+flags=['-std=gnu11','-O2','-Wno-format','-Wno-unused-value','-Wno-incompatible-pointer-types','-Wno-implicit-const-int-float-conversion','-DKIIKO_BOARD_METALIO47=%d'%metalio,'-D__LINUX__','-include',str(r/'shim/host.h'),'-include',str(r/'shim/esp_log.h')]+[str(x) for p in inc for x in ['-I',p]]
 objects=[]
 for name in sources:
     if name in comp_sources:

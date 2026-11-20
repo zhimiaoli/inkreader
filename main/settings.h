@@ -98,6 +98,26 @@ const char *app_settings_orbit_user(void);
 void app_settings_set_orbit_user(const char *user);
 const char *app_settings_orbit_password(void);
 void app_settings_set_orbit_password(const char *password);
+/// Kosync（KOReader 标准协议）服务器：服务器根地址（不带 /api/v1 前缀）、用户名与密码；
+/// 三项齐备时优先于 BookOrbit 凭据，并允许在服务器上注册新账号。
+/// Kosync (standard KOReader protocol) server: root URL (no /api/v1 prefix), user and
+/// password; when all three are set they take precedence over the BookOrbit credentials
+/// and account registration on that server becomes available.
+const char *app_settings_kosync_server(void);
+void app_settings_set_kosync_server(const char *url);
+const char *app_settings_kosync_user(void);
+void app_settings_set_kosync_user(const char *user);
+const char *app_settings_kosync_password(void);
+void app_settings_set_kosync_password(const char *password);
+/// OPDS 2.0 目录服务器：根地址与 Basic 认证账号（用户名/密码均可留空，匿名源直接可浏览）。
+/// OPDS 2.0 catalog server: root URL and Basic-auth account (username/password may be
+/// empty; anonymous sources browse without credentials).
+const char *app_settings_opds_server(void);
+void app_settings_set_opds_server(const char *url);
+const char *app_settings_opds_user(void);
+void app_settings_set_opds_user(const char *user);
+const char *app_settings_opds_password(void);
+void app_settings_set_opds_password(const char *password);
 /// 空路径表示固件内建字体；非空为 SD 上的 TTF。/ Empty path is the built-in font; non-empty is a TTF on the SD card.
 const char* app_settings_font_path(void);
 void app_settings_set_font_path(const char* path);

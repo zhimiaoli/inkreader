@@ -13,7 +13,7 @@ cp main/book/book_orbit_catalog.h build/book-orbit-src/book_orbit_catalog.h
 flags=(-std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer
        -ffunction-sections -fdata-sections
        -DBOOK_ORBIT_STATE_DIR='"build/book-orbit-test-state"'
-       -Itools/book_orbit_stubs -Itools/book_orbit_catalog_stubs -Ibuild/book-orbit-src)
+       -Itools/book_orbit_stubs -Itools/book_orbit_catalog_stubs -Imain/book -Ibuild/book-orbit-src)
 gcc "${flags[@]}" -Wl,--gc-sections tools/book_orbit_catalog_host_test.c \
     build/book-orbit-src/book_orbit_sync.c build/book-orbit-src/book_orbit_catalog.c \
     -o build/book-tests/book_orbit_catalog

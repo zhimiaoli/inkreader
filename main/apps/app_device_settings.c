@@ -133,7 +133,8 @@ typedef enum { SETTINGS_MAIN, SETTINGS_WIFI, SETTINGS_TIME,
 #else
                SETTINGS_POWER_SLEEP, SETTINGS_AUTO_LOCK, SETTINGS_PROFILE, SETTINGS_AVATAR,
 #endif
-               SETTINGS_BLUETOOTH, SETTINGS_BLE_SCAN, SETTINGS_BOOKORBIT,
+               SETTINGS_BLUETOOTH, SETTINGS_BLE_SCAN, SETTINGS_BOOKORBIT, SETTINGS_KOSYNC,
+               SETTINGS_OPDS,
 #if KIIKO_BOARD_METALIO47
                SETTINGS_LOCK_PIN, SETTINGS_PIN_ENTRY, SETTINGS_TEXT_EDIT, SETTINGS_FRONTLIGHT, SETTINGS_LANGUAGE } settings_page_t;
 #else
@@ -448,7 +449,7 @@ static int settings_main_row_height(void) {
     return 82;
 }
 #define SETTINGS_ROW_H settings_main_row_height()
-#define SETTINGS_WIRELESS_ROWS 4
+#define SETTINGS_WIRELESS_ROWS 6
 #if KIIKO_BOARD_METALIO47
 #define SETTINGS_DISPLAY_ROWS 9
 #else
@@ -490,6 +491,12 @@ static bool s_editor_signature;
 // BookOrbit 编辑器字段：0 无，1 服务器地址，2 用户名，3 密码（掩码显示）。
 // BookOrbit editor field: 0 none, 1 server URL, 2 username, 3 password (masked).
 static int s_editor_orbit;
+// Kosync 编辑器字段：与 BookOrbit 相同的三段式；两者互斥使用同一个文本编辑器。
+// Kosync editor field: the same three-stage editor, mutually exclusive with BookOrbit's.
+static int s_editor_kosync;
+// OPDS 编辑器字段：同样三段式（服务器/用户名/密码）。
+// OPDS editor field: the same three fields (server/username/password).
+static int s_editor_opds;
 static const char *system_font_label(const char *path) {
     if (!path || !path[0]) return "思源黑体";
     const char *name = strrchr(path, '/');
@@ -631,6 +638,8 @@ static void wallpaper_scan(void) {
 static void profile_editor_open(bool signature) {
     s_editor_signature = signature;
     s_editor_orbit = 0;
+    s_editor_kosync = 0;
+    s_editor_opds = 0;
     snprintf(s_editor, sizeof(s_editor), "%s", signature ? app_settings_status_signature() : app_settings_device_name());
     ui_text_edit_init(&s_editor_input, s_editor, sizeof(s_editor));
     s_editor_notice[0] = 0;
@@ -643,9 +652,45 @@ static void profile_editor_open(bool signature) {
 static void orbit_editor_open(int field) {
     s_editor_signature = false;
     s_editor_orbit = field;
+    s_editor_kosync = 0;
+    s_editor_opds = 0;
     const char *value = field == 1 ? app_settings_orbit_server()
                         : field == 2 ? app_settings_orbit_user()
                                      : app_settings_orbit_password();
+    snprintf(s_editor, sizeof(s_editor), "%s", value ? value : "");
+    ui_text_edit_init(&s_editor_input, s_editor, sizeof(s_editor));
+    s_editor_notice[0] = 0;
+    ui_keyboard_begin(&s_editor_input, field == 3);
+    s_page = SETTINGS_TEXT_EDIT;
+}
+
+// OPDS 服务器编辑器：服务器地址/用户名用普通键盘，密码用掩码与 ASCII 键盘。
+// OPDS server editor: plain keyboard for URL/username; masked ASCII for password.
+static void opds_editor_open(int field) {
+    s_editor_signature = false;
+    s_editor_orbit = 0;
+    s_editor_kosync = 0;
+    s_editor_opds = field;
+    const char *value = field == 1 ? app_settings_opds_server()
+                        : field == 2 ? app_settings_opds_user()
+                                     : app_settings_opds_password();
+    snprintf(s_editor, sizeof(s_editor), "%s", value ? value : "");
+    ui_text_edit_init(&s_editor_input, s_editor, sizeof(s_editor));
+    s_editor_notice[0] = 0;
+    ui_keyboard_begin(&s_editor_input, field == 3);
+    s_page = SETTINGS_TEXT_EDIT;
+}
+
+// Kosync 凭据编辑器：服务器地址/用户名用普通键盘，密码用掩码与 ASCII 键盘。
+// Kosync credential editor: plain keyboard for URL/username; masked ASCII for password.
+static void kosync_editor_open(int field) {
+    s_editor_signature = false;
+    s_editor_orbit = 0;
+    s_editor_kosync = field;
+    s_editor_opds = 0;
+    const char *value = field == 1 ? app_settings_kosync_server()
+                        : field == 2 ? app_settings_kosync_user()
+                                     : app_settings_kosync_password();
     snprintf(s_editor, sizeof(s_editor), "%s", value ? value : "");
     ui_text_edit_init(&s_editor_input, s_editor, sizeof(s_editor));
     s_editor_notice[0] = 0;
@@ -1193,17 +1238,29 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
         return;
     }
     if (s_page == SETTINGS_TEXT_EDIT) {
-        const bool orbit_masked = s_editor_orbit == 3;
+        const bool orbit_masked = s_editor_orbit == 3 || s_editor_kosync == 3 || s_editor_opds == 3;
         back_header(fb, s_editor_signature ? "状态栏签名"
                                   : s_editor_orbit == 1 ? "BookOrbit 服务器"
                                   : s_editor_orbit == 2 ? "BookOrbit 用户名"
-                                  : s_editor_orbit == 3 ? "BookOrbit 密码" : "设备名称");
+                                  : s_editor_orbit == 3 ? "BookOrbit 密码"
+                                  : s_editor_kosync == 1 ? "Kosync 服务器"
+                                  : s_editor_kosync == 2 ? "Kosync 用户名"
+                                  : s_editor_kosync == 3 ? "Kosync 密码"
+                                  : s_editor_opds == 1 ? "OPDS 服务器"
+                                  : s_editor_opds == 2 ? "OPDS 用户名"
+                                  : s_editor_opds == 3 ? "OPDS 密码" : "设备名称");
         ui_text(fb, 642, 95, 24, "完成", EPD_DRAW_ALIGN_RIGHT, false);
         ui_text(fb, 36, 201, 21,
                 s_editor_signature ? "状态栏中间显示，留空则隐藏"
                 : s_editor_orbit == 1 ? "裸主机名默认 https；粘贴完整 API 地址会自动剥后缀"
                 : s_editor_orbit == 2 ? "服务器 KOReader 同步凭据的用户名"
                 : s_editor_orbit == 3 ? "同一凭据的密码；留空清除"
+                : s_editor_kosync == 1 ? "标准 Kosync 服务器根地址；裸主机名默认 https"
+                : s_editor_kosync == 2 ? "Kosync 服务器的用户名"
+                : s_editor_kosync == 3 ? "Kosync 密码；留空清除"
+                : s_editor_opds == 1 ? "OPDS 2.0 目录根地址；裸主机名默认 https"
+                : s_editor_opds == 2 ? "Basic 认证用户名；匿名源留空"
+                : s_editor_opds == 3 ? "Basic 认证密码；留空清除"
                                      : "显示在设置页的资料卡",
                 EPD_DRAW_ALIGN_LEFT, false);
         ui_text_input_draw(fb, &s_editor_input, (EpdRect){36, 243, 612, 82}, 28, orbit_masked, NULL);
@@ -1306,6 +1363,57 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
         snprintf(detail, sizeof(detail), "上次同步 %s · 云端高亮 +%d",
                  orbit.last_sync[0] ? orbit.last_sync : "无", orbit.highlights);
         ui_text_box(fb, (EpdRect){54, 646, 576, 56}, 19, detail, EPD_DRAW_ALIGN_LEFT, false);
+        if (s_notice[0]) ui_text_box(fb, (EpdRect){54, 702, 576, 56}, 19, s_notice, EPD_DRAW_ALIGN_LEFT, false);
+        settings_navigation(fb);
+        return;
+    }
+    if (s_page == SETTINGS_OPDS) {
+        back_header(fb, "OPDS 书源");
+        const char *server = app_settings_opds_server();
+        const char *user = app_settings_opds_user();
+        const char *password = app_settings_opds_password();
+        char opds_server_value[80];
+        snprintf(opds_server_value, sizeof(opds_server_value), "%s", server[0] ? server : "未设置");
+        fit_value(opds_server_value, 400);
+        row(fb, 266, "服务器地址", opds_server_value);
+        row(fb, 334, "用户名", user[0] ? user : "匿名");
+        row(fb, 402, "密码", password[0] ? "已设置" : "未设置");
+        char opds_status[128];
+        snprintf(opds_status, sizeof(opds_status), "仅支持 OPDS 2.0（JSON）目录；保存后从主页「OPDS 书库」进入");
+        ui_text_box(fb, (EpdRect){54, 590, 576, 56}, 19, opds_status, EPD_DRAW_ALIGN_LEFT, false);
+        if (s_notice[0]) ui_text_box(fb, (EpdRect){54, 702, 576, 56}, 19, s_notice, EPD_DRAW_ALIGN_LEFT, false);
+        settings_navigation(fb);
+        return;
+    }
+    if (s_page == SETTINGS_KOSYNC) {
+        back_header(fb, "Kosync 同步");
+        book_orbit_status_t kos;
+        book_orbit_get_status(&kos);
+        const char *server = app_settings_kosync_server();
+        const char *user = app_settings_kosync_user();
+        const char *password = app_settings_kosync_password();
+        const bool ready = server[0] && user[0] && password[0];
+        char kosync_server_value[80];
+        snprintf(kosync_server_value, sizeof(kosync_server_value), "%s",
+                 server[0] ? server : "未设置");
+        fit_value(kosync_server_value, 400);
+        row(fb, 266, "服务器地址", kosync_server_value);
+        row(fb, 334, "用户名", user[0] ? user : "未设置");
+        row(fb, 402, "密码", password[0] ? "已设置" : "未设置");
+        ui_draw_button(fb, (EpdRect){54, 480, 278, 78},
+                       kos.busy ? "任务进行中" : ready ? "注册账号" : "请先完成配置",
+                       ready && !kos.busy);
+        ui_draw_button(fb, (EpdRect){352, 480, 278, 78},
+                       kos.busy ? "同步中…" : ready ? "立即同步" : "请先完成配置",
+                       ready && !kos.busy);
+        char kosync_status[128];
+        snprintf(kosync_status, sizeof(kosync_status), "%s",
+                 ready ? (kos.message[0] ? kos.message : "待同步") : "标准 Kosync 服务器；配置后自动同步进度");
+        ui_text_box(fb, (EpdRect){54, 590, 576, 56}, 21, kosync_status, EPD_DRAW_ALIGN_LEFT, false);
+        char kosync_detail[96];
+        snprintf(kosync_detail, sizeof(kosync_detail), "上次同步 %s · 云端高亮 +%d",
+                 kos.last_sync[0] ? kos.last_sync : "无", kos.highlights);
+        ui_text_box(fb, (EpdRect){54, 646, 576, 56}, 19, kosync_detail, EPD_DRAW_ALIGN_LEFT, false);
         if (s_notice[0]) ui_text_box(fb, (EpdRect){54, 702, 576, 56}, 19, s_notice, EPD_DRAW_ALIGN_LEFT, false);
         settings_navigation(fb);
         return;
@@ -1842,9 +1950,33 @@ static void render_content(app_ctx_t *ctx, uint8_t *fb) {
             snprintf(orbit_value,sizeof(orbit_value),"%.60s",host);
         }else snprintf(orbit_value,sizeof(orbit_value),"未配置");
     }
-    const char *connection_labels[]={"WiFi","蓝牙翻页器","日期与时间","BookOrbit 同步"};
-    const char *connection_values[]={wifi,app_settings_ble_turner()?"已开启":"已关闭","设置",orbit_value};
-    const int connection_icons[]={0,1,6,11};
+    char kosync_value[64];
+    {
+        const char *server=app_settings_kosync_server();
+        const char *user=app_settings_kosync_user();
+        const char *password=app_settings_kosync_password();
+        if(server[0]&&user[0]&&password[0]){
+            char normalized[224];
+            if(!book_orbit_normalize_server_url(server,normalized,sizeof(normalized)))normalized[0]=0;
+            const char *host=normalized;
+            if(!strncasecmp(host,"https://",8))host+=8;else if(!strncasecmp(host,"http://",7))host+=7;
+            snprintf(kosync_value,sizeof(kosync_value),"%.60s",host);
+        }else snprintf(kosync_value,sizeof(kosync_value),"未配置");
+    }
+    char opds_value[64];
+    {
+        const char *server=app_settings_opds_server();
+        if(server[0]){
+            char normalized[224];
+            if(!book_orbit_normalize_server_url(server,normalized,sizeof(normalized)))normalized[0]=0;
+            const char *host=normalized;
+            if(!strncasecmp(host,"https://",8))host+=8;else if(!strncasecmp(host,"http://",7))host+=7;
+            snprintf(opds_value,sizeof(opds_value),"%.60s",host);
+        }else snprintf(opds_value,sizeof(opds_value),"未配置");
+    }
+    const char *connection_labels[]={"WiFi","蓝牙翻页器","日期与时间","BookOrbit 同步","Kosync 同步","OPDS 书源"};
+    const char *connection_values[]={wifi,app_settings_ble_turner()?"已开启":"已关闭","设置",orbit_value,kosync_value,opds_value};
+    const int connection_icons[]={0,1,6,11,11,11};
     setting_group(fb,SETTINGS_WIRELESS_Y-49,"连接与时间",SETTINGS_WIRELESS_Y,
                   connection_icons,connection_labels,connection_values,SETTINGS_WIRELESS_ROWS);
     char font_name[96],contrast[24],idle[24],signature[96];
@@ -2467,6 +2599,16 @@ static app_redraw_t on_tick(app_ctx_t *ctx) {
             return APP_REDRAW_PAGE;
         }
     }
+    if (s_page == SETTINGS_KOSYNC) {
+        // Kosync 注册/同步同用这一状态机：revision 变化时整页重绘。
+        static unsigned kosync_revision;
+        book_orbit_status_t kosync;
+        book_orbit_get_status(&kosync);
+        if (kosync.revision != kosync_revision) {
+            kosync_revision = kosync.revision;
+            return APP_REDRAW_PAGE;
+        }
+    }
     // 蓝牙启动失败的原因转成提示。放在这里而不是 render()：render 必须是纯绘制，
     // 而 take_* 会清空状态。
     // Fold a Bluetooth start failure into the notice here rather than in render(), which must
@@ -2589,7 +2731,7 @@ static app_redraw_t on_tick(app_ctx_t *ctx) {
 static EpdRect s_input_area;
 static bool s_input_layout, s_input_settle;
 static app_redraw_t profile_editor_paint(app_ctx_t *ctx, bool field) {
-    ui_keyboard_update_t update = ui_keyboard_update(ctx->fb, UI_SYSTEM_KEYBOARD_TOP, (EpdRect){36, 243, 612, 82}, 28, s_editor_orbit == 3, NULL, field);
+    ui_keyboard_update_t update = ui_keyboard_update(ctx->fb, UI_SYSTEM_KEYBOARD_TOP, (EpdRect){36, 243, 612, 82}, 28, s_editor_orbit == 3 || s_editor_kosync == 3 || s_editor_opds == 3, NULL, field);
     s_input_area = update.area; s_input_layout = update.layout; s_input_settle = update.settle;
     return update.area.width ? APP_REDRAW_AREA : APP_REDRAW_NONE;
 }
@@ -2606,13 +2748,16 @@ static app_redraw_t profile_editor_gesture(app_ctx_t *ctx, const ui_gesture_even
     if (y < 160) {
         if (x < 160) {
             ui_keyboard_end();
-            s_page = s_editor_orbit ? SETTINGS_BOOKORBIT : s_editor_signature ? SETTINGS_MAIN : SETTINGS_PROFILE;
+            s_page = s_editor_orbit ? SETTINGS_BOOKORBIT
+                    : s_editor_kosync ? SETTINGS_KOSYNC
+                    : s_editor_opds ? SETTINGS_OPDS
+                    : s_editor_signature ? SETTINGS_MAIN : SETTINGS_PROFILE;
             return APP_REDRAW_PAGE;
         }
         if (x > 510) goto save_text;
     }
     if (ui_text_input_tap(&s_editor_input, (EpdRect){36, 243, 612, 82}, 28,
-                          s_editor_orbit == 3, NULL, x, y)) return profile_editor_paint(ctx, true);
+                          s_editor_orbit == 3 || s_editor_kosync == 3 || s_editor_opds == 3, NULL, x, y)) return profile_editor_paint(ctx, true);
     ui_keyboard_result_t result = ui_keyboard_tap(x, y, UI_SYSTEM_KEYBOARD_TOP, esp_timer_get_time() / 1000);
     if (result == UI_KEYBOARD_DONE) goto save_text;
     return result == UI_KEYBOARD_CHANGED ? profile_editor_paint(ctx, false) : APP_REDRAW_NONE;
@@ -2657,6 +2802,81 @@ save_text:
         }
         ui_keyboard_end();
         s_page = SETTINGS_BOOKORBIT;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_kosync == 1) {
+        char normalized[224];
+        if (!s_editor[0]) { snprintf(s_editor_notice, sizeof(s_editor_notice), "服务器地址不能为空"); return APP_REDRAW_PAGE; }
+        if (!book_orbit_normalize_server_url(s_editor, normalized, sizeof(normalized))) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "服务器地址无效");
+            return APP_REDRAW_PAGE;
+        }
+        app_settings_set_kosync_server(normalized);
+        if (strcmp(app_settings_kosync_server(), normalized)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_KOSYNC;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_kosync == 2) {
+        if (!s_editor[0]) { snprintf(s_editor_notice, sizeof(s_editor_notice), "用户名不能为空"); return APP_REDRAW_PAGE; }
+        app_settings_set_kosync_user(s_editor);
+        if (strcmp(app_settings_kosync_user(), s_editor)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_KOSYNC;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_kosync == 3) {
+        // 留空即清除密码，三项不再齐备时同步与注册自动停用。
+        app_settings_set_kosync_password(s_editor);
+        if (s_editor[0] && strcmp(app_settings_kosync_password(), s_editor)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_KOSYNC;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_opds == 1) {
+        char normalized[224];
+        if (!s_editor[0]) { snprintf(s_editor_notice, sizeof(s_editor_notice), "服务器地址不能为空"); return APP_REDRAW_PAGE; }
+        if (!book_orbit_normalize_server_url(s_editor, normalized, sizeof(normalized))) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "服务器地址无效");
+            return APP_REDRAW_PAGE;
+        }
+        app_settings_set_opds_server(normalized);
+        if (strcmp(app_settings_opds_server(), normalized)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_OPDS;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_opds == 2) {
+        app_settings_set_opds_user(s_editor);
+        if (s_editor[0] && strcmp(app_settings_opds_user(), s_editor)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_OPDS;
+        return APP_REDRAW_PAGE;
+    }
+    if (s_editor_opds == 3) {
+        // 留空即清除密码；匿名源允许用户名/密码全空。
+        app_settings_set_opds_password(s_editor);
+        if (s_editor[0] && strcmp(app_settings_opds_password(), s_editor)) {
+            snprintf(s_editor_notice, sizeof(s_editor_notice), "保存失败，请检查设置存储空间");
+            return APP_REDRAW_PAGE;
+        }
+        ui_keyboard_end();
+        s_page = SETTINGS_OPDS;
         return APP_REDRAW_PAGE;
     }
     if (s_editor_signature) app_settings_set_status_signature(s_editor);
@@ -2874,6 +3094,46 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
             snprintf(s_notice, sizeof(s_notice), "已在后台开始同步");
             return APP_REDRAW_PAGE;
         }
+        return APP_REDRAW_NONE;
+    }
+    if (s_page == SETTINGS_KOSYNC && ev->type == UI_GESTURE_TAP) {
+        int x = ev->x0, y = ev->y0;
+        if (y < 190) { s_page = SETTINGS_MAIN; return APP_REDRAW_PAGE; }
+        if (y >= 266 && y < 334) { kosync_editor_open(1); return APP_REDRAW_PAGE; }
+        if (y >= 334 && y < 402) { kosync_editor_open(2); return APP_REDRAW_PAGE; }
+        if (y >= 402 && y < 470) { kosync_editor_open(3); return APP_REDRAW_PAGE; }
+        if (x >= 54 && x < 332 && y >= 480 && y < 558) {
+            bool ready = app_settings_kosync_server()[0] && app_settings_kosync_user()[0] &&
+                         app_settings_kosync_password()[0];
+            if (!ready) {
+                snprintf(s_notice, sizeof(s_notice), "请先填写服务器、用户名与密码");
+                return APP_REDRAW_PAGE;
+            }
+            if (!book_orbit_request_register()) {
+                snprintf(s_notice, sizeof(s_notice), "注册任务未能启动");
+                return APP_REDRAW_PAGE;
+            }
+            s_notice[0] = 0;
+            return APP_REDRAW_PAGE;
+        }
+        if (x >= 352 && x < 630 && y >= 480 && y < 558) {
+            char last[BOOK_ORBIT_EVENT_PATH_MAX];
+            if (!book_progress_last_path(last, sizeof(last))) {
+                snprintf(s_notice, sizeof(s_notice), "没有可同步的书籍");
+                return APP_REDRAW_PAGE;
+            }
+            book_orbit_request_sync(true, last);
+            snprintf(s_notice, sizeof(s_notice), "已在后台开始同步");
+            return APP_REDRAW_PAGE;
+        }
+        return APP_REDRAW_NONE;
+    }
+    if (s_page == SETTINGS_OPDS && ev->type == UI_GESTURE_TAP) {
+        int x = ev->x0, y = ev->y0;
+        if (y < 190) { s_page = SETTINGS_MAIN; return APP_REDRAW_PAGE; }
+        if (y >= 266 && y < 334) { opds_editor_open(1); return APP_REDRAW_PAGE; }
+        if (y >= 334 && y < 402) { opds_editor_open(2); return APP_REDRAW_PAGE; }
+        if (y >= 402 && y < 470) { opds_editor_open(3); return APP_REDRAW_PAGE; }
         return APP_REDRAW_NONE;
     }
     if (s_page == SETTINGS_MAIN || s_page == SETTINGS_BLUETOOTH || s_page == SETTINGS_BLE_SCAN || s_page == SETTINGS_SHELF_STYLE) {
@@ -3366,7 +3626,9 @@ static app_redraw_t on_gesture(app_ctx_t *ctx, const ui_gesture_event_t *ev) {
             ble_pt_raw_t unused;while(ble_pt_pop_raw(&unused)){}return APP_REDRAW_PAGE;
         }
         if(row==2) { s_page=SETTINGS_TIME;return APP_REDRAW_PAGE; }
-        s_page=SETTINGS_BOOKORBIT;s_notice[0]=0;return APP_REDRAW_PAGE;
+        if(row==3) { s_page=SETTINGS_BOOKORBIT;s_notice[0]=0;return APP_REDRAW_PAGE; }
+        if(row==4) { s_page=SETTINGS_KOSYNC;s_notice[0]=0;return APP_REDRAW_PAGE; }
+        s_page=SETTINGS_OPDS;s_notice[0]=0;return APP_REDRAW_PAGE;
     }
     if(y>=SETTINGS_DISPLAY_Y && y<SETTINGS_DISPLAY_Y+SETTINGS_DISPLAY_ROWS*SETTINGS_ROW_H) {
         row=(y-SETTINGS_DISPLAY_Y)/SETTINGS_ROW_H;

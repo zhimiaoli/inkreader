@@ -34,6 +34,11 @@ void sim_pump_tasks(void);
 void sim_frame_write(const uint8_t*,const char*);
 void sim_wifi_toggle(void);
 bool sim_wifi_on(void);
+#if KIIKO_BOARD_METALIO47
+/* S31 frontlight host state: brightness/warmth levels plus a live preview flag. */
+static bool sim_frontlight_enabled=false;
+static unsigned sim_frontlight_levels[2]; /* {brightness, warmth} */
+#endif
 
 static uint8_t framebuffer[1216*684/2],lock_frame[1216*684/2];
 static EpdiyHighlevelState hl;
@@ -45,7 +50,13 @@ static ui_quick_menu_t quick;
 static app_lock_font_t lock_font;
 static bool locked,authenticating;static ui_pinpad_t pinpad;
 static unsigned frame_number;static char notice[180];
-static void paint(app_redraw_t result){if(result==APP_REDRAW_NONE)return;if(result==APP_REDRAW_PAGE||result==APP_REDRAW_FULL)ui_click_feedback_begin(framebuffer);bool handled=current->present&&current->present(&ctx,result);if(!handled&&(result==APP_REDRAW_PAGE||result==APP_REDRAW_FULL)&&current->render)current->render(&ctx,framebuffer);if(quick.open)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),current==&app_book);}
+static void paint(app_redraw_t result){if(result==APP_REDRAW_NONE)return;if(result==APP_REDRAW_PAGE||result==APP_REDRAW_FULL)ui_click_feedback_begin(framebuffer);bool handled=current->present&&current->present(&ctx,result);if(!handled&&(result==APP_REDRAW_PAGE||result==APP_REDRAW_FULL)&&current->render)current->render(&ctx,framebuffer);if(quick.open)
+#if KIIKO_BOARD_METALIO47
+ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),sim_frontlight_enabled,sim_frontlight_levels[0],sim_frontlight_levels[1],current==&app_book);
+#else
+ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),current==&app_book);
+#endif
+}
 static void draw(void){paint(APP_REDRAW_PAGE);}
 static void change(const app_desc_t *next,bool remember){if(!next)return;if(current&&current->on_exit)current->on_exit(&ctx);if(remember&&current&&next!=current&&history_count<20)history[history_count++]=current;current=next;ctx.request_app=NULL;ctx.request_return=ctx.request_menu=false;ctx.leaf=0;ui_gesture_reset(&gestures);ui_quick_menu_reset(&quick);if(current->on_enter)current->on_enter(&ctx);draw();}
 static void settle(app_redraw_t result){if(ctx.request_return){ctx.request_return=false;change(history_count?history[--history_count]:app_home_page(),false);return;}if(ctx.request_app){const app_desc_t*next=ctx.request_app;change(next,true);return;}if(ctx.request_menu){ctx.request_menu=false;change(app_at(3),true);return;}paint(result);}
@@ -56,10 +67,28 @@ static void feed(int x,int y,bool active){ctx.now_ms=esp_timer_get_time()/1000;c
  if(locked){if(authenticating){ui_gesture_event_t event;if(ui_gesture_feed(&gestures,&ctx,&event)){EpdRect dirty;ui_pin_result_t action=ui_pinpad_handle(&pinpad,&event,&dirty);if(action==UI_PIN_COMPLETE){if(lock_pin_verify(pinpad.digits)){locked=authenticating=false;ui_pinpad_end(&pinpad);app_font_end_lock(&lock_font);draw();}else{ui_pinpad_reset(&pinpad,"","密码不正确");snprintf(notice,sizeof(notice),"密码不正确");ui_pinpad_paint(framebuffer,&pinpad,ui_pinpad_full());}}else if(action==UI_PIN_CANCEL){authenticating=false;ui_pinpad_end(&pinpad);memcpy(framebuffer,lock_frame,sizeof(framebuffer));}else ui_pinpad_paint(framebuffer,&pinpad,ui_pinpad_full());}}return;}
  if(ctx.pressed&&!quick.open){EpdRect dirty;ui_click_feedback_press(framebuffer,x,y,&dirty);}
  ui_quick_action_t action=UI_QUICK_NONE;
- if(ui_quick_menu_feed(&quick,&ctx,true,&action)){if(action==UI_QUICK_WIFI)sim_wifi_toggle();if(action==UI_QUICK_BLUETOOTH)app_settings_set_ble_turner(!app_settings_ble_turner());if(action==UI_QUICK_LOCK){lock();return;}if(action==UI_QUICK_CLOSE){ui_quick_menu_end();draw();}else if(action==UI_QUICK_OPEN)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),current==&app_book);else if(quick.open){EpdRect dirty;for(int b=0;b<4;b++)ui_quick_menu_draw_button(framebuffer,b,b==0?sim_wifi_on():b==1?app_settings_ble_turner():false,ui_quick_menu_pressed(&quick)==b,&dirty);}return;}
+ if(ui_quick_menu_feed(&quick,&ctx,true,&action)){
+#if KIIKO_BOARD_METALIO47
+  if(action==UI_QUICK_WIFI)sim_wifi_toggle();
+  else if(action==UI_QUICK_BLUETOOTH)app_settings_set_ble_turner(!app_settings_ble_turner());
+  else if(action==UI_QUICK_FRONTLIGHT)sim_frontlight_enabled=!sim_frontlight_enabled;
+  else if(action==UI_QUICK_BRIGHTNESS)sim_frontlight_levels[0]=ui_quick_brightness_value((unsigned)quick.slider_position);
+  else if(action==UI_QUICK_WARMTH)sim_frontlight_levels[1]=(unsigned)quick.slider_position;
+  else if(action==UI_QUICK_LIGHT_COMMIT){}
+  else if(action==UI_QUICK_FULL){ui_quick_menu_end();quick.open=false;paint(APP_REDRAW_FULL);}
+  else if(action==UI_QUICK_CLOSE){ui_quick_menu_end();draw();}
+  else if(action==UI_QUICK_OPEN)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),sim_frontlight_enabled,sim_frontlight_levels[0],sim_frontlight_levels[1],current==&app_book);
+  else if(quick.open){EpdRect dirty;for(unsigned b=0;b<4;b++)ui_quick_menu_draw_button(framebuffer,b,b==0?sim_wifi_on():b==1?app_settings_ble_turner():b==3?sim_frontlight_enabled:false,ui_quick_menu_pressed(&quick)==(int)b,&dirty);
+   for(int s=0;s<2;s++){bool warm=s!=0;unsigned value=warm?sim_frontlight_levels[1]:ui_quick_brightness_position(sim_frontlight_levels[0]);if(quick.hit==4+s&&quick.tracking)value=(unsigned)quick.slider_position;ui_quick_menu_draw_slider(framebuffer,warm,value);}}
+#else
+  if(action==UI_QUICK_WIFI)sim_wifi_toggle();if(action==UI_QUICK_BLUETOOTH)app_settings_set_ble_turner(!app_settings_ble_turner());if(action==UI_QUICK_LOCK){lock();return;}if(action==UI_QUICK_CLOSE){ui_quick_menu_end();draw();}else if(action==UI_QUICK_OPEN)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),current==&app_book);else if(quick.open){EpdRect dirty;for(int b=0;b<4;b++)ui_quick_menu_draw_button(framebuffer,b,b==0?sim_wifi_on():b==1?app_settings_ble_turner():false,ui_quick_menu_pressed(&quick)==b,&dirty);}
+#endif
+  return;}
  ui_gesture_event_t event;if(ui_gesture_feed(&gestures,&ctx,&event)&&current->on_gesture)settle(current->on_gesture(&ctx,&event));
 }
 static void emit(void){const char *root=getenv("PICO_SIM_DATA");char path[4096];snprintf(path,sizeof(path),"%s/frame.png",root?root:"Data");sim_frame_write(framebuffer,path);printf("{\"frame\":\"%s\",\"sequence\":%u,\"page\":\"%s\",\"locked\":%s,\"notice\":\"%s\",\"version\":\"0.3.3-rc97\",\"homePreview\":%s}\n",path,++frame_number,locked?"锁屏":current->title,locked?"true":"false",notice,home_preview?"true":"false");fflush(stdout);notice[0]=0;}
+void sim_hl_present(EpdiyHighlevelState*h){if(h&&h->front_fb&&h->front_fb!=framebuffer)memcpy(framebuffer,h->front_fb,sizeof(framebuffer));emit();}
+void sim_hl_clear_white(EpdiyHighlevelState*h){if(h&&h->front_fb&&h->front_fb!=framebuffer)memset(h->front_fb,255,sizeof(framebuffer));memset(framebuffer,255,sizeof(framebuffer));emit();}
 void sim_init(void){setvbuf(stdout,NULL,_IOLBF,0);memset(framebuffer,255,sizeof(framebuffer));hl.front_fb=framebuffer;hl.back_fb=framebuffer;ctx=(app_ctx_t){.hl=&hl,.fb=framebuffer,.touch=&touch,.now_ms=esp_timer_get_time()/1000};app_settings_init();nvs_handle_t host_nvs;uint8_t initialized=0;if(nvs_open("sim_host",NVS_READWRITE,&host_nvs)==ESP_OK){nvs_get_u8(host_nvs,"initialized",&initialized);if(!initialized){if(ttf_font_path_is_builtin(app_settings_font_path())&&access(sim_path("/sdcard/fonts/Hei.ttf"),R_OK)==0)app_settings_set_font_path("/sdcard/fonts/Hei.ttf");nvs_set_u8(host_nvs,"initialized",1);nvs_commit(host_nvs);}nvs_close(host_nvs);}app_font_activate_system();change(app_home_page(),false);for(int i=0;i<12;i++){ctx.now_ms=esp_timer_get_time()/1000;sim_pump_tasks();if(current->on_tick)settle(current->on_tick(&ctx));}}
 void sim_command(const char *command){char line[2048];snprintf(line,sizeof(line),"%s",command);int x=0,y=0,n=0;ctx.now_ms=esp_timer_get_time()/1000;
  if(sscanf(line,"home %d",&n)==1){if(!locked){home_preview=n!=0;change(app_home_page(),false);}}
@@ -71,7 +100,13 @@ void sim_command(const char *command){char line[2048];snprintf(line,sizeof(line)
  else if(sscanf(line,"key %d",&n)==1){if(locked)wake();else if(current->on_key)settle(current->on_key(&ctx,n));}
  else if(!strncmp(line,"suspend",7)){if(current&&current->on_before_lock)current->on_before_lock(&ctx);}
  else if(!strncmp(line,"power",5)){if(locked)wake();else lock();}
- else if(!strncmp(line,"quick",5)){if(!locked){quick.open=!quick.open;if(quick.open)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),current==&app_book);else{ui_quick_menu_end();draw();}}}
+ else if(!strncmp(line,"quick",5)){if(!locked){quick.open=!quick.open;
+#if KIIKO_BOARD_METALIO47
+  if(quick.open)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),sim_frontlight_enabled,sim_frontlight_levels[0],sim_frontlight_levels[1],current==&app_book);else{ui_quick_menu_end();draw();}
+#else
+  if(quick.open)ui_quick_menu_draw(framebuffer,sim_wifi_on(),app_settings_ble_turner(),current==&app_book);else{ui_quick_menu_end();draw();}
+#endif
+ }}
  else if(!strncmp(line,"refresh",7)){if(!locked)draw();}
  else if(!strncmp(line,"rescan",6)){if(!locked){book_store_notify_changed();change(current,false);}}
  else if(!strncmp(line,"open ",5)){line[strcspn(line,"\r\n")]=0;char *path=line+5;if(!locked){app_book_request_open(path);change(&app_book,true);}}

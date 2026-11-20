@@ -44,6 +44,7 @@
 #include "read_pico_pmu.h"
 #include "read_pico_transfer.h"
 
+#include "book_clipping.h"
 #include "book_progress.h"
 #include "book_title.h"
 #include "settings.h"
@@ -262,6 +263,102 @@ bool book_orbit_normalize_server_url(const char *in, char *out, size_t cap) {
     return true;
 }
 
+bool book_orbit_register_payload(const char *user, const char *password, char *out, size_t cap) {
+    if (!user || !password || !out || !cap) return false;
+    if (!user[0] || !password[0]) return false;
+    if (strlen(user) >= 64) return false;
+    /* 用户名直接内插进 JSON，禁止引号与反斜杠（注册键盘允许的字符远大于此集合）。 */
+    /* The username is interpolated into JSON verbatim; quotes and backslashes are banned
+       (the settings keyboard permits a far larger character set than this). */
+    for (const char *p = user; *p; ++p)
+        if (*p == '"' || *p == '\\') return false;
+    char userkey[33];
+    md5_text_hex(password, strlen(password), userkey);
+    int n = snprintf(out, cap, "{\"username\":\"%s\",\"password\":\"%s\"}", user, userkey);
+    memset(userkey, 0, sizeof(userkey));
+    return n > 0 && (size_t)n < cap;
+}
+
+bool book_orbit_register_accepted(int status) { return status == 201 || status == 200; }
+
+bool book_orbit_highlight_pos(uint32_t offset, char *out, size_t cap) {
+    if (!out || cap < 32) return false;
+    int n = snprintf(out, cap, "/body/TextMemo[%u]", (unsigned)offset);
+    return n > 0 && (size_t)n < cap;
+}
+
+bool book_orbit_push_key(uint32_t timestamp, uint32_t start_offset, char k[33], char dt[20]) {
+    char pos[64];
+    if (!book_orbit_format_datetime(timestamp, dt) ||
+        !book_orbit_highlight_pos(start_offset, pos, sizeof(pos)))
+        return false;
+    return book_orbit_annotation_key(dt, pos, k);
+}
+
+bool book_orbit_annotations_exchange_body(const char *device_id, const char *device_model,
+                                          const char *hash, const book_orbit_push_entry_t *changes,
+                                          size_t change_count, const book_orbit_push_key_t *keys,
+                                          size_t key_count, bool keys_complete, char **out_body) {
+    if (!device_id || !device_model || !hash || !out_body || (!changes && change_count) ||
+        (!keys && key_count) || change_count > BOOK_ORBIT_PUSH_BATCH)
+        return false;
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return false;
+    cJSON_AddStringToObject(root, "deviceId", device_id);
+    cJSON_AddStringToObject(root, "deviceModel", device_model);
+    cJSON_AddStringToObject(root, "pluginVersion", BOOK_ORBIT_PLUGIN_VERSION);
+    cJSON *books = cJSON_AddArrayToObject(root, "books");
+    cJSON *book = cJSON_CreateObject();
+    cJSON_AddItemToArray(books, book);
+    cJSON_AddStringToObject(book, "hash", hash);
+    cJSON_AddBoolToObject(book, "keysComplete", keys_complete);
+    cJSON *change_array = cJSON_AddArrayToObject(book, "changes");
+    bool ok = true;
+    for (size_t i = 0; ok && i < change_count; ++i) {
+        const book_orbit_push_entry_t *e = &changes[i];
+        char pos0[64], pos1[64], dt[20];
+        if (!e->text || !book_orbit_format_datetime(e->timestamp, dt) ||
+            !book_orbit_highlight_pos(e->start_offset, pos0, sizeof(pos0)) ||
+            !book_orbit_highlight_pos(e->end_offset, pos1, sizeof(pos1))) {
+            ok = false;
+            break;
+        }
+        cJSON *entry = cJSON_CreateObject();
+        if (!entry) {
+            ok = false;
+            break;
+        }
+        cJSON_AddItemToArray(change_array, entry);
+        /* drawer 必填：缺失会被服务器当成 position-only bookmark。 */
+        /* drawer is required: entries without it land as position-only bookmarks. */
+        cJSON_AddStringToObject(entry, "datetime", dt);
+        cJSON_AddStringToObject(entry, "drawer", "lighten");
+        cJSON_AddStringToObject(entry, "posFormat", "xpointer");
+        cJSON_AddStringToObject(entry, "pos0", pos0);
+        cJSON_AddStringToObject(entry, "pos1", pos1);
+        cJSON_AddStringToObject(entry, "text", e->text);
+        if (e->page > 0) cJSON_AddNumberToObject(entry, "pageno", e->page);
+    }
+    if (ok && key_count) {
+        cJSON *key_array = cJSON_AddArrayToObject(book, "keys");
+        for (size_t i = 0; ok && i < key_count; ++i) {
+            cJSON *row = cJSON_CreateObject();
+            if (!row) {
+                ok = false;
+                break;
+            }
+            cJSON_AddItemToArray(key_array, row);
+            cJSON_AddStringToObject(row, "k", keys[i].k);
+            cJSON_AddStringToObject(row, "dt", keys[i].dt);
+        }
+    }
+    char *body = ok ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (!body) return false;
+    *out_body = body;
+    return true;
+}
+
 bool book_orbit_document_hash(const char *path, char out[33]) {
     if (!path || !out) return false;
     FILE *file = fopen(path, "rb");
@@ -321,13 +418,22 @@ typedef struct {
     char server[BOOK_ORBIT_URL_MAX];
     char user[64];
     char password[96];
+    bool kosync;  ///< 凭据来自 Kosync 设置（标准协议，端点在服务器根路径）
+                  ///< Credentials came from the Kosync settings (standard protocol, root endpoints)
 } orbit_credentials_t;
 
 static void load_credentials(orbit_credentials_t *out) {
     memset(out, 0, sizeof(*out));
-    const char *server = app_settings_orbit_server();
-    const char *user = app_settings_orbit_user();
-    const char *password = app_settings_orbit_password();
+    const char *server = app_settings_kosync_server();
+    const char *user = app_settings_kosync_user();
+    const char *password = app_settings_kosync_password();
+    if (server && server[0] && user && user[0] && password && password[0]) {
+        out->kosync = true;
+    } else {
+        server = app_settings_orbit_server();
+        user = app_settings_orbit_user();
+        password = app_settings_orbit_password();
+    }
     if (server) snprintf(out->server, sizeof(out->server), "%s", server);
     if (user) snprintf(out->user, sizeof(out->user), "%s", user);
     if (password) snprintf(out->password, sizeof(out->password), "%s", password);
@@ -707,6 +813,7 @@ static char s_pending_path[BOOK_ORBIT_EVENT_PATH_MAX];
 static volatile bool s_pending_path_valid;
 static volatile bool s_cancel;
 static volatile bool s_request;
+static volatile bool s_register_request;
 
 static void publish(book_orbit_state_t state, const char *message) {
     s_status.state = state;
@@ -905,10 +1012,21 @@ void book_orbit_request_sync(bool forced, const char *path) {
     orbit_start_worker();
 }
 
+bool book_orbit_request_register(void) {
+    orbit_credentials_t credentials;
+    load_credentials(&credentials);
+    if (!credentials.kosync) return false; /* 注册仅面向标准 Kosync 服务器 */
+    s_cancel = false;
+    s_register_request = true;
+    orbit_start_worker();
+    return true;
+}
+
 void book_orbit_cancel_join(void) {
     s_cancel = true;
     for (int i = 0; i < 100 && s_status.busy; ++i) vTaskDelay(pdMS_TO_TICKS(20));
     s_request = false;
+    s_register_request = false;
     orbit_release_network();
 }
 
@@ -922,7 +1040,7 @@ static bool orbit_auth(const orbit_credentials_t *cred, const char *base, const 
         return false;
     }
     if (status == 401) {
-        *message = "BookOrbit 账号或密码错误";
+        *message = "账号或密码错误";
         return false;
     }
     if (status != 200) {
@@ -1004,9 +1122,10 @@ static bool orbit_put_progress(const orbit_credentials_t *cred, const char *base
 }
 
 static bool orbit_upload_stats(const orbit_credentials_t *cred, const char *base, const char *hash,
-                               const char *device_model, size_t *uploaded) {
+                               const char *device_model, size_t *uploaded, bool *unsupported) {
     size_t total = queue_count(hash);
     *uploaded = 0;
+    *unsupported = false;
     if (!total) return true;
     char url[BOOK_ORBIT_URL_BUF];
     snprintf(url, sizeof(url), "%s/plugin/page-stats", base);
@@ -1041,9 +1160,17 @@ static bool orbit_upload_stats(const orbit_credentials_t *cred, const char *base
         cJSON_Delete(root);
         if (!body) return false;
         int status = 0;
-        bool ok = orbit_http(url, "POST", body, cred, NULL, 0, &status) && status >= 200 && status < 300;
+        bool transport = orbit_http(url, "POST", body, cred, NULL, 0, &status);
         free(body);
-        if (!ok) return false;
+        if (!transport) return false;
+        if (status == 404) {
+            /* 标准 Kosync 服务器没有 page-stats 插件：保留事件，继续进度同步。 */
+            /* Standard Kosync servers have no page-stats plugin: keep the queued events and
+               carry on with progress sync. */
+            *unsupported = true;
+            return true;
+        }
+        if (status < 200 || status >= 300) return false;
         *uploaded += count;
     }
     queue_clear(hash);
@@ -1248,6 +1375,188 @@ static void orbit_sweep(const orbit_credentials_t *cred, const char *base, const
 
 static char s_scratch[BOOK_ORBIT_RESPONSE_MAX];
 
+static int highlight_record_count(const char *hash) {
+    char file_path[192];
+    if (!highlight_file(hash, file_path, sizeof(file_path))) return 0;
+    FILE *file = fopen(file_path, "rb");
+    if (!file) return 0;
+    orbit_highlight_header_t header = {0};
+    bool ok = fread(&header, 1, sizeof(header), file) == sizeof(header) &&
+              header.magic == HIGHLIGHT_MAGIC;
+    fclose(file);
+    return ok ? (int)header.count : 0;
+}
+
+static size_t highlight_collect_keys(const char *hash, book_orbit_push_key_t *keys, size_t cap) {
+    char file_path[192];
+    if (!keys || !cap || !highlight_file(hash, file_path, sizeof(file_path))) return 0;
+    FILE *file = fopen(file_path, "rb");
+    if (!file) return 0;
+    orbit_highlight_header_t header = {0};
+    size_t count = 0;
+    char *pos = malloc(BOOK_ORBIT_TEXT_MAX + 1);
+    if (fread(&header, 1, sizeof(header), file) == sizeof(header) &&
+        header.magic == HIGHLIGHT_MAGIC && pos) {
+        for (uint32_t i = 0; i < header.count && count < cap; ++i) {
+            orbit_highlight_record_t record = {0};
+            if (fread(&record, 1, sizeof(record), file) != sizeof(record)) break;
+            long skip = (long)record.pos_len + record.text_len + record.chapter_len;
+            if (record.pos_len && record.pos_len <= BOOK_ORBIT_TEXT_MAX &&
+                fread(pos, 1, record.pos_len, file) == record.pos_len) {
+                pos[record.pos_len] = 0;
+                if (record.datetime[0] &&
+                    book_orbit_annotation_key(record.datetime, pos, keys[count].k)) {
+                    snprintf(keys[count].dt, sizeof(keys[count].dt), "%s", record.datetime);
+                    ++count;
+                }
+            }
+            if (skip > record.pos_len && fseek(file, skip - record.pos_len, SEEK_CUR) != 0) break;
+        }
+    }
+    free(pos);
+    fclose(file);
+    return count;
+}
+
+/// 收集本地持有注解的完整键集：剪藏（未删除）+ 已落地的拉取高亮。删除传播=墓碑键缺席。
+/// Collect the complete key set of locally held annotations: clippings (non-deleted) plus
+/// stored pulled highlights. Deletions propagate as tombstone keys absent from the set.
+static bool orbit_collect_keys(const char *hash, book_orbit_push_key_t **out_keys,
+                               size_t *out_count) {
+    *out_keys = NULL;
+    *out_count = 0;
+    size_t cap = (size_t)book_clipping_count() + (size_t)highlight_record_count(hash);
+    if (!cap) return true;
+    book_orbit_push_key_t *keys =
+        heap_caps_calloc(cap, sizeof(*keys), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!keys) keys = heap_caps_calloc(cap, sizeof(*keys), MALLOC_CAP_8BIT);
+    if (!keys) return false;
+    size_t count = 0;
+    for (int i = 0; i < book_clipping_count(); ++i) {
+        book_clipping_t entry;
+        if (!book_clipping_get(i, &entry) || entry.deleted) continue;
+        if (!book_orbit_push_key(entry.timestamp, entry.start_offset, keys[count].k,
+                                 keys[count].dt))
+            continue;
+        ++count;
+    }
+    count += highlight_collect_keys(hash, keys + count, cap - count);
+    *out_keys = keys;
+    *out_count = count;
+    return true;
+}
+
+/// 划线上行：pending 条目分批进入 exchange（每批条数与总文本字节双重限界），完整键集
+/// 随批携带；按回执 (datetime,pos0) 认领本批条目，记 revision、清 pendingUpload 并回执
+/// 确认。一轮 exchange 成功即视为删除传播完成（墓碑键缺席）。
+/// Highlight push: pending entries enter the exchange in bounded batches (entry count and
+/// total text bytes), carrying the complete key set; replies are claimed by
+/// (datetime,pos0) to store the revision, clear pendingUpload and ack. One successful
+/// round means deletions have propagated (tombstone keys absent from the set).
+static bool orbit_push_highlights(const orbit_credentials_t *cred, const char *base,
+                                  const char *hash, const char *device_model, size_t *out_pushed) {
+    *out_pushed = 0;
+    book_orbit_push_key_t *keys = NULL;
+    size_t key_count = 0;
+    if (!orbit_collect_keys(hash, &keys, &key_count)) return false;
+    char device_id[32];
+    orbit_device_id(device_id);
+    char url[BOOK_ORBIT_URL_BUF];
+    snprintf(url, sizeof(url), "%s/plugin/annotations/exchange", base);
+    char *stage =
+        heap_caps_calloc(BOOK_ORBIT_PUSH_BATCH, BOOK_ORBIT_PUSH_TEXT_MAX + 1,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!stage)
+        stage = heap_caps_calloc(BOOK_ORBIT_PUSH_BATCH, BOOK_ORBIT_PUSH_TEXT_MAX + 1,
+                                 MALLOC_CAP_8BIT);
+    bool ok = stage != NULL;
+    size_t pushed = 0;
+    int total = ok ? book_clipping_count() : 0;
+    int cursor = 0;
+    while (ok && cursor < total && !s_cancel) {
+        book_orbit_push_entry_t changes[BOOK_ORBIT_PUSH_BATCH];
+        int batch_index[BOOK_ORBIT_PUSH_BATCH];
+        size_t count = 0, text_bytes = 0;
+        while (cursor < total && count < BOOK_ORBIT_PUSH_BATCH) {
+            book_clipping_t entry;
+            if (!book_clipping_get(cursor, &entry) || entry.deleted || !entry.pending_upload) {
+                ++cursor;
+                continue;
+            }
+            size_t room = BOOK_ORBIT_PUSH_TEXT_BYTES - text_bytes;
+            if (room == 0) break;
+            if (room > BOOK_ORBIT_PUSH_TEXT_MAX) room = BOOK_ORBIT_PUSH_TEXT_MAX;
+            char *slot = stage + count * (BOOK_ORBIT_PUSH_TEXT_MAX + 1);
+            int got = book_clipping_text(cursor, slot, room + 1);
+            if (got <= 0) {
+                ++cursor; /* 读取失败：跳过，不阻塞其余条目。Skip; do not block the rest. */
+                continue;
+            }
+            /* 回退到 UTF-8 边界再截断。Back off to a UTF-8 boundary before truncating. */
+            while (got > 0 && ((unsigned char)slot[got] & 0xC0) == 0x80) --got;
+            slot[got] = 0;
+            changes[count] = (book_orbit_push_entry_t){entry.timestamp, entry.start_offset,
+                                                       entry.end_offset, (int)entry.start_page + 1,
+                                                       slot};
+            batch_index[count] = cursor;
+            text_bytes += (size_t)got;
+            ++count;
+            ++cursor;
+        }
+        if (!count) break;
+        char *body = NULL;
+        if (!book_orbit_annotations_exchange_body(device_id, device_model, hash, changes, count,
+                                                  keys, key_count, true, &body)) {
+            ok = false;
+            break;
+        }
+        int status = 0;
+        bool transport = orbit_http(url, "POST", body, cred, s_scratch, sizeof(s_scratch), &status);
+        free(body);
+        if (!transport || status < 200 || status >= 300) {
+            ok = false;
+            break;
+        }
+        orbit_incoming_t incoming[BOOK_ORBIT_STATS_BATCH];
+        bool unmatched = false, more = false;
+        int got_n =
+            orbit_parse_incoming(s_scratch, incoming, BOOK_ORBIT_STATS_BATCH, &unmatched, &more);
+        if (got_n < 0) {
+            ok = false;
+            break;
+        }
+        orbit_incoming_t ack_set[BOOK_ORBIT_STATS_BATCH];
+        int ack_n = 0;
+        for (int r = 0; r < got_n; ++r) {
+            for (size_t c = 0; c < count; ++c) {
+                char dt[20], pos0[64];
+                if (!book_orbit_format_datetime(changes[c].timestamp, dt) ||
+                    !book_orbit_highlight_pos(changes[c].start_offset, pos0, sizeof(pos0)))
+                    continue;
+                if (strcmp(incoming[r].datetime, dt) || strcmp(incoming[r].pos0, pos0)) continue;
+                book_clipping_mark_synced(batch_index[c], incoming[r].version);
+                ++pushed;
+                ack_set[ack_n++] = incoming[r]; /* 浅拷贝，指针随 incoming 释放。Shallow copy. */
+                break;
+            }
+        }
+        if (ack_n) orbit_ack(cred, base, hash, device_model, ack_set, ack_n);
+        orbit_free_incoming(incoming, got_n);
+    }
+    /* 删除传播在完整键集 exchange 成功后即完成；倒序清除墓碑（mark_synced 会收缩表）。
+       Deletions are propagated once a complete-key exchange round succeeds; clear
+       tombstones in reverse (mark_synced shrinks the table). */
+    for (int i = total - 1; ok && i >= 0; --i) {
+        book_clipping_t entry;
+        if (!book_clipping_get(i, &entry) || !entry.deleted || !entry.pending_upload) continue;
+        book_clipping_mark_synced(i, 0);
+    }
+    heap_caps_free(stage);
+    heap_caps_free(keys);
+    if (ok) *out_pushed = pushed;
+    return ok;
+}
+
 static bool orbit_run_sync(const char *path) {
     const char *message = NULL;
     orbit_credentials_t credentials;
@@ -1259,7 +1568,11 @@ static bool orbit_run_sync(const char *path) {
             publish(BOOK_ORBIT_FAILED, "服务器地址无效");
             return false;
         }
-        snprintf(base, sizeof(base), "%s" BOOK_ORBIT_BASE_SUFFIX, normalized);
+        /* Kosync（标准协议）端点在服务器根路径；BookOrbit 带 /api/v1/koreader 前缀。 */
+        /* Kosync (standard protocol) endpoints sit at the server root; BookOrbit uses the
+           /api/v1/koreader prefix. */
+        snprintf(base, sizeof(base), "%s%s", normalized,
+                 credentials.kosync ? "" : BOOK_ORBIT_BASE_SUFFIX);
     }
     publish_book_name(path);
     publish(BOOK_ORBIT_CONNECTING, "正在连接 WiFi");
@@ -1330,14 +1643,29 @@ static bool orbit_run_sync(const char *path) {
     book_orbit_flush_events();
     publish(BOOK_ORBIT_STATS, "正在上传阅读 session");
     size_t stats_uploaded = 0;
-    bool stats_ok = orbit_upload_stats(&credentials, base, hash, device_model, &stats_uploaded);
+    bool stats_unsupported = false;
+    bool stats_ok =
+        orbit_upload_stats(&credentials, base, hash, device_model, &stats_uploaded, &stats_unsupported);
+
+    // ---- 划线上行 ----
+    size_t pushed = 0;
+    if (stats_ok && !s_cancel && book_clipping_ensure_loaded(path) == ESP_OK &&
+        book_clipping_pending_count() > 0) {
+        publish(BOOK_ORBIT_HIGHLIGHTS, "正在上传划线");
+        if (!orbit_push_highlights(&credentials, base, hash, device_model, &pushed)) {
+            /* 上行失败不阻塞本轮拉取：条目保持 pending，下轮重试。 */
+            /* Push failure does not block the pull; entries stay pending for the next round. */
+            ESP_LOGI(TAG, "annotation push failed; %u entries stay pending",
+                     (unsigned)book_clipping_pending_count());
+        }
+    }
 
     // ---- 高亮 ----
     publish(BOOK_ORBIT_HIGHLIGHTS, "正在拉取云端高亮");
     bool unmatched = false;
     int highlights_added =
         stats_ok ? orbit_pull_highlights(&credentials, base, hash, device_model, &unmatched) : 0;
-    if (stats_ok && !unmatched)
+    if (stats_ok && !stats_unsupported && !unmatched)
         orbit_sweep(&credentials, base, device_model, stats_uploaded,
                     (size_t)(highlights_added > 0 ? highlights_added : 0));
 
@@ -1353,6 +1681,8 @@ static bool orbit_run_sync(const char *path) {
     char done[96];
     int n = snprintf(done, sizeof(done), "同步完成 · 高亮+%d · session %u", highlights_added,
                      (unsigned)stats_uploaded);
+    if (pushed && n > 0 && (size_t)n < sizeof(done))
+        n += snprintf(done + n, sizeof(done) - n, " · 划线%u", (unsigned)pushed);
     if (applied_remote && n > 0 && (size_t)n < sizeof(done))
         snprintf(done + n, sizeof(done) - n, " · 已采纳云端进度");
     publish(BOOK_ORBIT_DONE, done);
@@ -1365,12 +1695,66 @@ static bool orbit_run_sync(const char *path) {
     return true;
 }
 
+static void orbit_run_register(void) {
+    orbit_credentials_t credentials;
+    load_credentials(&credentials);
+    if (!credentials.kosync || !credentials_ready(&credentials)) {
+        publish(BOOK_ORBIT_FAILED, "Kosync 账号信息不完整");
+        return;
+    }
+    char normalized[BOOK_ORBIT_URL_MAX];
+    if (!book_orbit_normalize_server_url(credentials.server, normalized, sizeof(normalized))) {
+        publish(BOOK_ORBIT_FAILED, "服务器地址无效");
+        return;
+    }
+    const char *message = NULL;
+    publish(BOOK_ORBIT_CONNECTING, "正在连接 WiFi");
+    if (!orbit_ensure_network(&message)) {
+        publish(s_cancel ? BOOK_ORBIT_CANCELLED : BOOK_ORBIT_FAILED, message);
+        return;
+    }
+    orbit_anchor_clock();
+    publish(BOOK_ORBIT_AUTH, "正在注册 Kosync 账号");
+    char url[BOOK_ORBIT_URL_BUF];
+    snprintf(url, sizeof(url), "%s/users/create", normalized);
+    char payload[160];
+    if (!book_orbit_register_payload(credentials.user, credentials.password, payload, sizeof(payload))) {
+        orbit_release_network();
+        publish(BOOK_ORBIT_FAILED, "注册请求构造失败");
+        return;
+    }
+    int status = 0;
+    bool transport = orbit_http(url, "POST", payload, &credentials, s_scratch, sizeof(s_scratch), &status);
+    orbit_release_network();
+    if (!transport) {
+        publish(s_cancel ? BOOK_ORBIT_CANCELLED : BOOK_ORBIT_FAILED, "网络连接失败");
+        return;
+    }
+    if (status == 402) {
+        publish(BOOK_ORBIT_FAILED, "用户名已被占用");
+        return;
+    }
+    if (!book_orbit_register_accepted(status)) {
+        char scratch[48];
+        snprintf(scratch, sizeof(scratch), "注册失败 (HTTP %d)", status);
+        publish(BOOK_ORBIT_FAILED, scratch);
+        return;
+    }
+    publish(BOOK_ORBIT_DONE, "注册成功，账号已可用");
+    ++s_status.revision;
+}
+
 static volatile bool s_task_alive;
 static TaskHandle_t s_task;
 
 static void orbit_worker(void *arg) {
     (void)arg;
     for (;;) {
+        if (s_register_request) {
+            s_register_request = false;
+            s_cancel = false;
+            orbit_run_register();
+        }
         if (s_request) {
             s_request = false;
             s_cancel = false;
@@ -1381,11 +1765,11 @@ static void orbit_worker(void *arg) {
         }
         /* 空闲 60 秒后退出，下次请求重建任务。 */
         int idle_ticks = 0;
-        while (!s_request && idle_ticks < BOOK_ORBIT_IDLE_TICKS) {
+        while (!s_request && !s_register_request && idle_ticks < BOOK_ORBIT_IDLE_TICKS) {
             vTaskDelay(pdMS_TO_TICKS(500));
             ++idle_ticks;
         }
-        if (!s_request) break;
+        if (!s_request && !s_register_request) break;
     }
     s_task_alive = false;
     s_task = NULL;

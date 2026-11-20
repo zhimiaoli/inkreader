@@ -202,6 +202,7 @@ extern const app_desc_t app_device_settings;
 #include "book_added.h"
 #include "book_ticket.h"
 #include "book_orbit_sync.h"
+#include "book_clipping.h"
 #include "sleep.h"
 #include "book_excerpt.h"
 #include "book_toc.h"
@@ -255,7 +256,7 @@ extern const app_desc_t app_device_settings;
 #define BOOK_MARGIN_MIN 0
 #define BOOK_MARGIN_MAX 48
 #define BOOK_MARGIN_CHOICES 9
-#define BOOK_TOOL_COUNT 5
+#define BOOK_TOOL_COUNT 6
 #define BOOK_FONT_PAGE 9
 #define BOOKMARK_MAX 24
 #define BOOKMARK_ROWS 6
@@ -286,6 +287,7 @@ typedef enum {
     READER_PANEL_TOUCH_SETTINGS,
     READER_PANEL_TOUCH_MORE,
     READER_PANEL_READING_LIGHT,
+    READER_PANEL_CLIPPINGS,
 } reader_panel_t;
 
 static reader_auto_clock_t s_rc_auto;
@@ -675,6 +677,22 @@ static int64_t s_chapter_warm_retry;
 static int s_turn_direction=1;
 #else
 #endif
+
+/* ---- 划线选区与剪藏状态 / Selection and clipping state ---- */
+static bool s_selection_active;       /* 正文选区活动 / Active body selection */
+static size_t s_sel_start, s_sel_end; /* 选区源字节范围 / Source byte range */
+static bool s_sel_menu;               /* 选区菜单可见 / Selection menu visible */
+static int s_sel_drag;                /* 0 无拖动 1 起点柄 2 终点柄 / Drag handle side */
+static bool s_sel_menu_delete;        /* 选区命中既有剪藏，显示删除 / Menu shows delete */
+static int s_sel_hit_index;           /* 命中的既有剪藏条目 / Matched clipping entry */
+static EpdRect s_sel_handle_a, s_sel_handle_b, s_sel_menu_card; /* 命中矩形 / Hit rects */
+static book_layout_highlight_span_t s_hl_spans[64];
+static size_t s_hl_count;
+static uint32_t s_hl_signature;
+static bool s_hl_dirty;
+static int s_clip_page;               /* 剪藏列表页码 / Clipping list page */
+
+static void selection_reset(void);
 
 #define s_toolbar (s_reader_panel != READER_PANEL_NONE)
 
@@ -2917,6 +2935,7 @@ static void draw_reader_tool_icon(uint8_t* fb, int cx, int cy, int kind, bool se
         UI_ICON_CHART_COLUMN,  // 2 阅读统计
         UI_ICON_BOOK_OPEN,     // 3 阅读设置 / Reading settings
         UI_ICON_TYPE,          // 4 字体设置
+        UI_ICON_COPY,          // 5 划线/剪藏 / Highlights & clippings
     };
     if (kind < 0 || kind >= (int)(sizeof(tools) / sizeof(tools[0]))) return;
     const ui_icon_t icon = (kind == 1 && selected) ? UI_ICON_BOOKMARK_CHECK : tools[kind];
@@ -3912,6 +3931,117 @@ static EpdRect reader_fast_panel_rect(void) {
     return(EpdRect){0,top,UI_LOCK_WIDTH,UI_LOCK_HEIGHT-top};
 }
 #endif
+/* ---- 划线/剪藏列表面板 / Clipping list panel ---- */
+#define CLIP_ROWS 6
+static EpdRect clip_close_band(void) { return (EpdRect){0, 0, UI_LOCK_WIDTH, 520}; }
+static EpdRect clip_export_rect(bool md) { return (EpdRect){md ? 344 : 60, 1002, 236, 58}; }
+static EpdRect clip_pager_rect(bool next) { return (EpdRect){next ? 586 : 98, 1002, 78, 58}; }
+
+static int clip_entries_total(void) {
+    int total = 0;
+    int count = book_clipping_count();
+    for (int i = 0; i < count; ++i) {
+        book_clipping_t entry;
+        if (book_clipping_get(i, &entry) && !entry.deleted) ++total;
+    }
+    return total;
+}
+
+static bool clip_entry_at(int position, book_clipping_t* out, int* table_index) {
+    int seen = 0;
+    int count = book_clipping_count();
+    for (int i = 0; i < count; ++i) {
+        book_clipping_t entry;
+        if (!book_clipping_get(i, &entry) || entry.deleted) continue;
+        if (seen++ == position) {
+            *out = entry;
+            if (table_index) *table_index = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void draw_reader_clippings(uint8_t* fb) {
+    ui_text_set_system_scale(false);
+    int total = clip_entries_total();
+    char title[96];
+    snprintf(title, sizeof(title), "划线与剪藏 · %d 条", total);
+    ui_text_vc(fb, 36, 560, 26, title, EPD_DRAW_ALIGN_LEFT, false);
+    ui_draw_icon(fb, UI_LOCK_WIDTH - 44, 574, 36, UI_ICON_X, 0x38);
+    if (!total) {
+        ui_text_vc(fb, UI_LOCK_WIDTH / 2, 760, 22, "长按正文选中文字即可添加划线",
+                   EPD_DRAW_ALIGN_CENTER, false);
+        return;
+    }
+    int pages = (total + CLIP_ROWS - 1) / CLIP_ROWS;
+    if (s_clip_page >= pages) s_clip_page = pages - 1;
+    if (s_clip_page < 0) s_clip_page = 0;
+    int first = s_clip_page * CLIP_ROWS;
+    for (int row = 0; row < CLIP_ROWS; ++row) {
+        book_clipping_t entry;
+        int table_index = -1;
+        if (!clip_entry_at(first + row, &entry, &table_index)) break;
+        int y = 616 + row * 62;
+        char text[144];
+        if (book_clipping_text(table_index, text, sizeof(text)) < 0) text[0] = 0;
+        char line[192];
+        snprintf(line, sizeof(line), "P%d · %s", (int)entry.start_page + 1, text);
+        fit_fixed_text(line, 20, 616);
+        ui_text_vc(fb, 40, y + 16, 20, line, EPD_DRAW_ALIGN_LEFT, false);
+        ui_hairline(fb, y + 52, 40, 604, UI_GRAY_LIGHT);
+    }
+    char pager[32];
+    snprintf(pager, sizeof(pager), "%d/%d", s_clip_page + 1, pages);
+    ui_text_vc(fb, UI_LOCK_WIDTH / 2, 1031, 22, pager, EPD_DRAW_ALIGN_CENTER, false);
+    EpdRect txt = clip_export_rect(false);
+    ui_fill_round_rect(fb, txt, 12, 0xe0);
+    ui_draw_round_rect(fb, txt, 12, UI_GRAY_BLACK);
+    ui_text_box(fb, txt, 21, "导出 TXT", EPD_DRAW_ALIGN_CENTER, false);
+    EpdRect md = clip_export_rect(true);
+    ui_fill_round_rect(fb, md, 12, 0xe0);
+    ui_draw_round_rect(fb, md, 12, UI_GRAY_BLACK);
+    ui_text_box(fb, md, 21, "导出 Markdown", EPD_DRAW_ALIGN_CENTER, false);
+    if (s_clip_page > 0) {
+        EpdRect prev = clip_pager_rect(false);
+        ui_text_box(fb, prev, 22, "上一页", EPD_DRAW_ALIGN_CENTER, false);
+    }
+    if (s_clip_page + 1 < pages) {
+        EpdRect next = clip_pager_rect(true);
+        ui_text_box(fb, next, 22, "下一页", EPD_DRAW_ALIGN_CENTER, false);
+    }
+}
+
+static app_redraw_t reader_clippings_action(app_ctx_t* ctx, uint16_t x, uint16_t y) {
+    (void)ctx;
+    if (ui_rect_hit(clip_close_band(), x, y)) {
+        s_reader_panel = READER_PANEL_NONE;
+        return APP_REDRAW_PAGE;
+    }
+    int total = clip_entries_total();
+    if (!total) return APP_REDRAW_NONE;
+    bool md = ui_rect_hit(clip_export_rect(true), x, y);
+    if (md || ui_rect_hit(clip_export_rect(false), x, y)) {
+        int exported = 0;
+        esp_err_t err = book_clipping_export(s_path, s_book_title, md, &exported);
+        if (err == ESP_OK)
+            snprintf(s_reader_notice, sizeof(s_reader_notice), "已导出 %d 条到书库", exported);
+        else
+            copy_text(s_reader_notice, sizeof(s_reader_notice), "导出失败");
+        s_reader_notice_until = esp_timer_get_time() / 1000 + 2200;
+        return APP_REDRAW_PAGE;
+    }
+    if (ui_rect_hit(clip_pager_rect(false), x, y) && s_clip_page > 0) {
+        --s_clip_page;
+        return APP_REDRAW_PAGE;
+    }
+    if (ui_rect_hit(clip_pager_rect(true), x, y)) {
+        ++s_clip_page;
+        return APP_REDRAW_PAGE;
+    }
+    return APP_REDRAW_NONE;
+}
+
 static void draw_reader_panel(uint8_t* fb) {
     if(rc_draw_current(fb))return;
     if (s_reader_panel==READER_PANEL_NONE && s_reader_fullscreen) return;
@@ -3925,7 +4055,7 @@ static void draw_reader_panel(uint8_t* fb) {
     if (reader_tools_visible()) {
         ui_fill_rect_fast((EpdRect){0, 1096, UI_LOCK_WIDTH, 120}, s_reader_fullscreen?UI_GRAY_WHITE:UI_NAV_BACKGROUND_GRAY, fb);
         ui_hairline(fb, 1096, 0, UI_LOCK_WIDTH, 0x98);
-        const char* labels[] = {"目录", "书签", "阅读统计", "阅读设置", "文字设置"};
+        const char* labels[] = {"目录", "书签", "阅读统计", "阅读设置", "文字设置", "划线"};
         for (int i = 0; i < BOOK_TOOL_COUNT; ++i) {
             EpdRect rect = tool_rect(i);
             int cx = rect.x + rect.width / 2;
@@ -3948,6 +4078,7 @@ static void draw_reader_panel(uint8_t* fb) {
     else if (s_reader_panel == READER_PANEL_TURN_SETTINGS) draw_turn_settings(fb);
     else if (s_reader_panel == READER_PANEL_KEY_SETTINGS) draw_key_settings(fb);
     else if (s_reader_panel == READER_PANEL_KEY_PICKER) draw_key_picker(fb);
+    else if (s_reader_panel == READER_PANEL_CLIPPINGS) draw_reader_clippings(fb);
     ui_text_set_system_scale(false);
 #if KIIKO_BOARD_METALIO47
     if(fast_panel.height)(void)display_reader_panel_gray4_prepare(fb,fast_panel);
@@ -4706,6 +4837,267 @@ static void draw_reader_metadata(uint8_t *fb,size_t page) {
         if(track.width)ui_fill_round_rect(fb,track,3,UI_GRAY_BLACK);
     }
 }
+/* ---- 选区交互 / Selection interaction ---- */
+static void draw_reader(uint8_t *fb, size_t page);
+static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode);
+// 把当前书剪藏落到排版划线区间；签名不符的条目只在列表展示，不参与渲染。
+static void reader_highlights_reload(void) {
+    s_hl_count = 0;
+    s_hl_signature = book_layout_signature();
+    int count = book_clipping_count();
+    for (int i = 0; i < count && s_hl_count < sizeof(s_hl_spans) / sizeof(s_hl_spans[0]); ++i) {
+        book_clipping_t entry;
+        if (!book_clipping_get(i, &entry) || entry.deleted) continue;
+        if (!entry.layout_signature || entry.layout_signature != s_hl_signature) continue;
+        if (entry.end_offset <= entry.start_offset) continue;
+        s_hl_spans[s_hl_count++] =
+            (book_layout_highlight_span_t){entry.start_offset, entry.end_offset};
+    }
+}
+
+static void reader_apply_highlight_spans(void) {
+    uint32_t signature = book_layout_signature();
+    if (signature != s_hl_signature || s_hl_dirty) reader_highlights_reload();
+    s_hl_dirty = false;
+    size_t count = s_hl_count;
+    /* 活动选区即时显示下划线；保存后由剪藏条目接管。 */
+    if (s_selection_active && s_sel_end > s_sel_start && count < sizeof(s_hl_spans) / sizeof(s_hl_spans[0]))
+        s_hl_spans[count++] = (book_layout_highlight_span_t){s_sel_start, s_sel_end};
+    book_layout_set_highlights(s_hl_spans, count);
+}
+
+// 选区柄：起点在该行下沿、终点在该行上沿，经典对角布局。
+static bool selection_handle_rects(EpdRect* a, EpdRect* b) {
+    EpdRect body = body_rect();
+    int x0, y0t, y0b, x1, y1t, y1b;
+    if (!book_layout_offset_x(s_page, body, s_px, s_sel_start, &x0, &y0t, &y0b) ||
+        !book_layout_offset_x(s_page, body, s_px, s_sel_end, &x1, &y1t, &y1b))
+        return false;
+    if (y0b < 0) y0b = 0;
+    if (y1t < 0) y1t = 0;
+    *a = (EpdRect){x0 - 10, y0b, 20, 20};
+    *b = (EpdRect){x1 - 10, y1t - 20, 20, 20};
+    return true;
+}
+
+static EpdRect selection_menu_rect(void) {
+    EpdRect a, b;
+    if (!selection_handle_rects(&a, &b)) return (EpdRect){0};
+    int top = a.y < b.y ? a.y : b.y;
+    int bottom = (a.y + a.height) > (b.y + b.height) ? a.y + a.height : b.y + b.height;
+    int left = a.x < b.x ? a.x : b.x;
+    int right = (a.x + a.width) > (b.x + b.width) ? a.x + a.width : b.x + b.width;
+    EpdRect card = {left, bottom + 12, 320, 88};
+    EpdRect body = body_rect();
+    if (card.y + card.height > body.y + body.height) card.y = top - 12 - card.height;
+    if (card.x + card.width > body.x + body.width) card.x = body.x + body.width - card.width;
+    if (card.x < body.x) card.x = body.x;
+    if (card.y < body.y) card.y = body.y;
+    return card;
+}
+
+static EpdRect selection_menu_button(const EpdRect* card, int i) {
+    EpdRect b1 = {card->x + 12, card->y + 12, (card->width - 36) / 2, card->height - 24};
+    if (i == 0) return b1;
+    return (EpdRect){b1.x + b1.width + 12, b1.y, b1.width, b1.height};
+}
+
+static void selection_refresh_hit(void) {
+    s_sel_hit_index = -1;
+    s_sel_menu_delete = false;
+    int count = book_clipping_count();
+    for (int i = 0; i < count; ++i) {
+        book_clipping_t entry;
+        if (!book_clipping_get(i, &entry) || entry.deleted) continue;
+        if (entry.start_offset == s_sel_start && entry.end_offset == s_sel_end) {
+            s_sel_hit_index = i;
+            s_sel_menu_delete = true;
+            break;
+        }
+    }
+}
+
+static bool selection_begin(int x, int y) {
+    size_t ws, we;
+    EpdRect wr;
+    if (!book_layout_hit_word(s_page, body_rect(), s_px, x, y, &ws, &we, &wr)) return false;
+    s_selection_active = true;
+    s_sel_start = ws;
+    s_sel_end = we;
+    s_sel_drag = 0;
+    s_sel_menu = true;
+    selection_refresh_hit();
+    return true;
+}
+
+static void selection_reset(void) {
+    s_selection_active = false;
+    s_sel_menu = false;
+    s_sel_drag = 0;
+}
+
+// 拖柄移动：命中词；没有词时取最近行的端点（跨行拖动顺畅）。
+static bool selection_word_at(int x, int y, size_t* ws, size_t* we) {
+    EpdRect wr;
+    if (book_layout_hit_word(s_page, body_rect(), s_px, x, y, ws, we, &wr)) return true;
+    int lines = book_layout_page_line_count(s_page);
+    EpdRect line;
+    size_t ls, le;
+    int best = -1, best_dist = 0;
+    for (int i = 0; i < lines; ++i) {
+        if (!book_layout_page_line_at(s_page, i, &line, &ls, &le)) continue;
+        int dist = (y >= line.y && y < line.y + line.height)
+                       ? 0
+                       : abs(line.y + line.height / 2 - y);
+        if (best < 0 || dist < best_dist) {
+            best = i;
+            best_dist = dist;
+        }
+    }
+    if (best < 0 || !book_layout_page_line_at(s_page, best, &line, &ls, &le)) return false;
+    *ws = ls;
+    *we = le;
+    return true;
+}
+
+static bool selection_drag_move(int x, int y) {
+    size_t ws, we;
+    if (!selection_word_at(x, y, &ws, &we)) return false;
+    size_t old_start = s_sel_start, old_end = s_sel_end;
+    if (s_sel_drag == 1) {
+        s_sel_start = ws < we ? ws : we;
+        if (s_sel_start > s_sel_end) s_sel_start = s_sel_end;
+    } else {
+        s_sel_end = we > ws ? we : ws;
+        if (s_sel_end < s_sel_start) s_sel_end = s_sel_start;
+    }
+    if (s_sel_start == old_start && s_sel_end == old_end) return false;
+    s_sel_menu = false;
+    selection_refresh_hit();
+    return true;
+}
+
+static EpdRect selection_bounds(void) {
+    EpdRect u = ui_rect_union(s_sel_handle_a, s_sel_handle_b);
+    if (s_sel_menu && s_sel_menu_card.height) u = ui_rect_union(u, s_sel_menu_card);
+    return u;
+}
+
+// 选区重绘：整帧重算进 fb，显示只推选区并集，保持 DU 局刷无整页闪烁。
+static app_redraw_t selection_repaint(app_ctx_t* ctx, EpdRect previous) {
+    (void)ctx;
+    draw_reader(ctx->fb, s_page);
+    EpdRect area = selection_bounds();
+    if (previous.height) area = ui_rect_union(area, previous);
+    s_area = area;
+    s_mode = MODE_DU;
+    return APP_REDRAW_AREA;
+}
+
+// 选区覆盖层：两柄 + 小菜单；工具栏/弹窗出现时不画。
+static void draw_selection_overlay(uint8_t* fb, size_t page) {
+    if (!s_selection_active || s_toolbar || s_clear_confirm || page != s_page) return;
+    EpdRect a, b;
+    if (!selection_handle_rects(&a, &b)) return;
+    s_sel_handle_a = a;
+    s_sel_handle_b = b;
+    ui_fill_rect_fast((EpdRect){a.x + a.width / 2 - 1, a.y - 22, 3, 24}, UI_GRAY_BLACK, fb);
+    ui_fill_round_rect(fb, a, 10, UI_GRAY_BLACK);
+    ui_fill_rect_fast((EpdRect){b.x + b.width / 2 - 1, b.y + b.height - 2, 3, 24}, UI_GRAY_BLACK, fb);
+    ui_fill_round_rect(fb, b, 10, UI_GRAY_BLACK);
+    if (!s_sel_menu) return;
+    EpdRect card = selection_menu_rect();
+    s_sel_menu_card = card;
+    ui_fill_round_rect(fb, card, 16, UI_GRAY_WHITE);
+    ui_draw_round_rect(fb, card, 16, UI_GRAY_BLACK);
+    EpdRect b1 = selection_menu_button(&card, 0);
+    EpdRect b2 = selection_menu_button(&card, 1);
+    ui_fill_round_rect(fb, b1, 12, s_sel_menu_delete ? UI_GRAY_BLACK : 0xe0);
+    ui_draw_round_rect(fb, b1, 12, UI_GRAY_BLACK);
+    ui_text_box(fb, b1, 22, s_sel_menu_delete ? "删除" : "划线", EPD_DRAW_ALIGN_CENTER,
+                s_sel_menu_delete);
+    ui_fill_round_rect(fb, b2, 12, 0xe0);
+    ui_draw_round_rect(fb, b2, 12, UI_GRAY_BLACK);
+    ui_text_box(fb, b2, 22, "取消", EPD_DRAW_ALIGN_CENTER, false);
+}
+
+// 菜单动作：划线落盘（pendingUpload 交同步上行）或删除命中条目。
+static app_redraw_t selection_menu_apply(app_ctx_t* ctx, bool remove) {
+    bool had_menu = s_sel_menu;
+    EpdRect previous = selection_bounds();
+    if (remove && s_sel_hit_index >= 0) {
+        book_clipping_remove(s_sel_hit_index);
+        s_hl_dirty = true;
+        copy_text(s_reader_notice, sizeof(s_reader_notice), "划线已删除");
+        s_reader_notice_until = esp_timer_get_time() / 1000 + 1800;
+    } else if (!remove) {
+        char text[BOOK_CLIPPING_TEXT_MAX];
+        if (book_layout_text_range(s_sel_start, s_sel_end, text, sizeof(text))) {
+            esp_err_t err = book_clipping_add(s_path, (uint32_t)s_sel_start, (uint32_t)s_sel_end,
+                                              book_layout_signature(), (int)s_page, (int)s_page,
+                                              text);
+            s_hl_dirty = true;
+            copy_text(s_reader_notice, sizeof(s_reader_notice),
+                      err == ESP_OK ? "已添加划线" : "划线保存失败");
+            s_reader_notice_until = esp_timer_get_time() / 1000 + 1800;
+        }
+    }
+    selection_reset();
+    /* 有覆盖层变化才走局刷；新增/删除划线改动正文下划线，走整页 GL16。 */
+    if (had_menu && previous.height) return selection_repaint(ctx, previous);
+    return paint_reading(ctx, MODE_GL16);
+}
+
+// 选区手势：柄拖动与菜单点击；handled=true 表示事件已被选区消费。
+static app_redraw_t selection_gesture(app_ctx_t* ctx, const ui_gesture_event_t* ev, bool* handled) {
+    *handled = false;
+    if (s_view != READING || s_toolbar || s_clear_confirm || !s_selection_active)
+        return APP_REDRAW_NONE;
+    EpdRect previous = selection_bounds();
+    if (s_sel_drag) {
+        if (ev->type == UI_GESTURE_MOVE) {
+            *handled = true;
+            return selection_drag_move(ev->x, ev->y) ? selection_repaint(ctx, previous)
+                                                     : APP_REDRAW_NONE;
+        }
+        /* 任意收尾事件回到菜单态。Any finalizing event returns to the menu state. */
+        s_sel_drag = 0;
+        s_sel_menu = true;
+        *handled = true;
+        return selection_repaint(ctx, previous);
+    }
+    if (ev->type == UI_GESTURE_PRESS) {
+        if (ui_rect_hit(s_sel_handle_a, ev->x0, ev->y0)) {
+            s_sel_drag = 1;
+            *handled = true;
+        } else if (ui_rect_hit(s_sel_handle_b, ev->x0, ev->y0)) {
+            s_sel_drag = 2;
+            *handled = true;
+        }
+        return APP_REDRAW_NONE;
+    }
+    if (ev->type == UI_GESTURE_TAP) {
+        if (s_sel_menu) {
+            EpdRect card = s_sel_menu_card;
+            if (ui_rect_hit(selection_menu_button(&card, 0), ev->x0, ev->y0))
+                return selection_menu_apply(ctx, s_sel_menu_delete);
+            if (ui_rect_hit(selection_menu_button(&card, 1), ev->x0, ev->y0)) {
+                selection_reset();
+                return selection_repaint(ctx, previous);
+            }
+        }
+        /* 点选区外关闭选区。Tap outside closes the selection. */
+        selection_reset();
+        return selection_repaint(ctx, previous);
+    }
+    if (ev->type == UI_GESTURE_CANCEL) {
+        selection_reset();
+        *handled = true;
+        return selection_repaint(ctx, previous);
+    }
+    return APP_REDRAW_NONE;
+}
+
 static void draw_reader_outer(uint8_t *fb,size_t page) {
     ui_text_set_system_scale(false);
     EpdRect body=body_rect();
@@ -4756,15 +5148,18 @@ static void draw_reader_outer(uint8_t *fb,size_t page) {
 }
 static void draw_reader(uint8_t *fb,size_t page) {
     ui_text_set_system_scale(false);ui_clear_page(fb);
-    if (!(s_zoom_active && page == s_page && reader_zoom_image()))
+    if (!(s_zoom_active && page == s_page && reader_zoom_image())) {
+        reader_apply_highlight_spans();
         book_layout_draw_page(fb,page,body_rect(),s_px);
+    }
     draw_reader_outer(fb,page);
+    draw_selection_overlay(fb,page);
 }
 #if KIIKO_BOARD_METALIO47
 // 复用现有四槽正文，无新整帧缓存；覆盖层不存进正文槽，正文/字体变化沿原代次和失效规则。
 // Reuse the existing four body slots without another frame; never cache overlays, and retain body/font invalidation.
 static void draw_reader_cached(uint8_t *fb,size_t page) {
-    const bool eligible=!s_clear_confirm&&!s_reader_notice[0]&&
+    const bool eligible=!s_clear_confirm&&!s_reader_notice[0]&&!s_selection_active&&
         s_reader_panel!=READER_PANEL_BACKGROUND&&s_reader_panel!=READER_PANEL_BACKGROUND_PREVIEW&&
         !book_layout_page_image_count(page)&&!app_settings_book_background_path()[0];
     const uint8_t *cached=eligible?reader_page_cache_find(page,book_layout_generation(),fb_bytes()):NULL;
@@ -5470,9 +5865,9 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     const uint8_t *cached_pixels=reader_page_cache_find(s_page,book_layout_generation(),fb_bytes());
     if(!s_toolbar&&!s_clear_confirm&&!cached_pixels&&s_next_fb&&reader_prefetch_resume(s_page))
         cached_pixels=reader_page_cache_find(s_page,book_layout_generation(),fb_bytes());
-    bool cached = !s_toolbar && !s_clear_confirm && cached_pixels;
+    bool cached = !s_toolbar && !s_clear_confirm && !s_selection_active && cached_pixels;
 #else
-    bool cached = !s_toolbar && !s_clear_confirm && s_next_fb &&
+    bool cached = !s_toolbar && !s_clear_confirm && !s_selection_active && s_next_fb &&
                   ((s_next_page == (int)s_page && s_next_generation == book_layout_generation()) ||
                    reader_prefetch_resume(s_page));
 #endif
@@ -5489,7 +5884,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     // A prefetched page can be minutes old; replace its status with the current time.
     if (cached && reader_status_visible()) reader_status_paint(ctx->fb);
 #if KIIKO_BOARD_METALIO47
-    if(!s_toolbar&&!s_clear_confirm&&!s_reader_notice[0]&&!book_layout_page_image_count(s_page)&&
+    if(!s_toolbar&&!s_clear_confirm&&!s_selection_active&&!s_reader_notice[0]&&!book_layout_page_image_count(s_page)&&
        !app_settings_book_background_path()[0])
         (void)reader_page_cache_store(s_page,book_layout_generation(),ctx->fb,fb_bytes(),s_page);
 #else
@@ -5602,6 +5997,9 @@ static void free_book(void) {
 #else
     book_close();
 #endif
+    selection_reset();
+    book_clipping_unload();
+    s_hl_dirty = true;
     s_path[0] = 0;
     s_reader_favorite = false;
     s_book_title[0] = 0;
@@ -6043,6 +6441,10 @@ static bool open_book_impl(app_ctx_t* ctx, const char* path) {
         return false;
     }
     copy_text(s_path, sizeof(s_path), path);
+    (void)book_clipping_load(path);
+    s_hl_dirty = true;
+    selection_reset();
+    s_clip_page = 0;
 #if KIIKO_BOARD_METALIO47
     s_ticket_cover_started=s_ticket_cover_done=false;
 #endif
@@ -7211,6 +7613,7 @@ static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
     if(!s_rc_auto_turning)rc_pause_auto();
     if (!s_text || s_clear_confirm) return APP_REDRAW_NONE;
     reader_zoom_reset();
+    selection_reset();
 #if KIIKO_BOARD_METALIO47
     s_turn_direction=dir;
 #else
@@ -7905,6 +8308,7 @@ static app_redraw_t reader_panel_action(app_ctx_t* ctx, uint16_t x, uint16_t y) 
         return reader_background_action(x, y);
     if (s_reader_panel == READER_PANEL_STATS || s_reader_panel == READER_PANEL_CHAPTER_JUMP)
         return reader_chapter_jump_action(ctx, x, y);
+    if (s_reader_panel == READER_PANEL_CLIPPINGS) return reader_clippings_action(ctx, x, y);
     if (reader_tools_visible()) {
         for (int i = 0; i < BOOK_TOOL_COUNT; ++i) if (ui_rect_hit(tool_rect(i), x, y)) {
             pause_reader_prep();
@@ -7922,6 +8326,9 @@ static app_redraw_t reader_panel_action(app_ctx_t* ctx, uint16_t x, uint16_t y) 
                 reader_chapter_jump_begin();
             } else if (i == 3) {
                 s_reader_panel = READER_PANEL_REFRESH_SETTINGS;
+            } else if (i == 5) {
+                s_clip_page = 0;
+                s_reader_panel = READER_PANEL_CLIPPINGS;
             } else {
                 s_rc_font_root=false;
                 s_line_spacing = app_settings_book_line_spacing();
@@ -9493,6 +9900,9 @@ static app_redraw_t gesture_event(app_ctx_t* ctx, const ui_gesture_event_t* ev) 
     bool zoom_handled = false;
     app_redraw_t zoom_redraw = image_zoom_gesture(ctx, ev, &zoom_handled);
     if(zoom_handled){rc_pause_auto();return zoom_redraw;}
+    bool sel_handled = false;
+    app_redraw_t sel_redraw = selection_gesture(ctx, ev, &sel_handled);
+    if (sel_handled) { if (sel_redraw != APP_REDRAW_NONE) rc_pause_auto(); return sel_redraw; }
     bool rc_handled=false;app_redraw_t rc_result=rc_gesture(ctx,ev,&rc_handled);if(rc_handled)return rc_result;
     bool indent_handled=false;
     app_redraw_t indent_redraw=reader_indent_gesture(ctx,ev,&indent_handled);
@@ -9664,6 +10074,10 @@ static app_redraw_t gesture_event(app_ctx_t* ctx, const ui_gesture_event_t* ev) 
         }
         if (s_view == READING && !s_toolbar && !s_clear_confirm &&
             ui_rect_hit(reader_area(), ev->x0, ev->y0) && ui_rect_hit(body_rect(), ev->x0, ev->y0)) {
+            /* 长按正文先尝试选词；空白处保持进目录。Long-press selects a word; empty
+               body areas keep opening the TOC. */
+            if (selection_begin(ev->x0, ev->y0)) return selection_repaint(ctx, (EpdRect){0});
+            selection_reset();
             save_progress();
             set_reader_view(TOC);
             s_message[0] = 0;
@@ -9689,7 +10103,8 @@ static app_redraw_t gesture_event(app_ctx_t* ctx, const ui_gesture_event_t* ev) 
             return action_at(ctx, ev->x0, ev->y0);
     }
     if (!s_clear_confirm && !shelf_waiting_for_index()) {
-        if (s_view == READING && (!s_toolbar || (s_reader_panel == READER_PANEL_TOOLS && ev->y0 < 1096)) &&
+        if (s_view == READING && !s_selection_active &&
+            (!s_toolbar || (s_reader_panel == READER_PANEL_TOOLS && ev->y0 < 1096)) &&
             ui_rect_hit(reader_area(), ev->x0, ev->y0) && ui_rect_hit(body_rect(), ev->x0, ev->y0)) {
             int direction = reader_swipe_direction(ev->type, app_settings_reader_vertical_turn());
             if (direction) { ctx->user_activity = true; return turn_page(ctx, direction); }

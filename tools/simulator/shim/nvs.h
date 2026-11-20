@@ -42,3 +42,4 @@ int nvs_set_i32(nvs_handle_t,const char*,int32_t);
 int nvs_erase_all(nvs_handle_t);
 
 int nvs_entry_find_in_handle(nvs_handle_t,nvs_type_t,nvs_iterator_t*);
+esp_err_t nvs_get_used_entry_count(nvs_handle_t, size_t*);
