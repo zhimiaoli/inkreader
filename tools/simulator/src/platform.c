@@ -75,6 +75,7 @@ int nvs_entry_next(nvs_iterator_t*out){return iterator_step(out);}
 int nvs_entry_info(nvs_iterator_t it,nvs_entry_info_t*out){*out=it->info;return 0;}
 void nvs_release_iterator(nvs_iterator_t it){if(it){closedir(it->dir);free(it);}}
 int nvs_erase_all(nvs_handle_t h){nvs_iterator_t it=NULL;if(nvs_entry_find_in_handle(h,NVS_TYPE_ANY,&it))return 0;do{nvs_erase_key(h,it->info.key);}while(!nvs_entry_next(&it));return 0;}
+esp_err_t nvs_get_used_entry_count(nvs_handle_t h,size_t *out){nvs_iterator_t it=NULL;if(nvs_entry_find_in_handle(h,NVS_TYPE_ANY,&it)){if(out)*out=0;return ESP_ERR_NVS_NOT_FOUND;}size_t n=0;do{n++;}while(!nvs_entry_next(&it));if(out)*out=n;return ESP_OK;}
 
 int epd_width(void){return 1216;}int epd_height(void){return 684;}
 int epd_rotated_display_width(void){return 684;}int epd_rotated_display_height(void){return 1216;}

@@ -2,18 +2,20 @@
  * SPDX-FileCopyrightText: 2026 mindreset
  * SPDX-License-Identifier: Apache-2.0
  *
- * 中文：BookOrbit（自托管书库）同步：KOReader 兼容协议客户端、阅读 session 队列、
+ * 中文：Kosync/BookOrbit 同步：KOReader 兼容协议客户端、阅读 session 队列、
  *      高亮拉取存储与后台自动同步任务。协议与存储在此，界面只在设置页展示状态。
- * English: BookOrbit (self-hosted library) sync: KOReader-compatible protocol client,
- *      reading-session queue, highlight pull store and the background auto-sync worker.
- *      Protocol and storage live here; only the settings page shows status.
+ * English: Kosync/BookOrbit sync: KOReader-compatible protocol client, reading-session
+ *      queue, highlight pull store and the background auto-sync worker. Protocol and
+ *      storage live here; only the settings page shows status.
  *
- * 冻结：凭据经设置 NVS 与 v26 备份；本地进度 NVS 只读不写（应用远端进度走待用建议，
- *      由阅读器下次开书消费）；高亮仅拉取展示（keysComplete=false 抑制双向删除）。
- * Frozen: credentials live in settings NVS and the v26 backup; local progress NVS is
+ * 冻结：凭据经设置 NVS 与 v27 备份；本地进度 NVS 只读不写（应用远端进度走待用建议，
+ *      由阅读器下次开书消费）。凭据优先取 Kosync（标准协议，端点在服务器根路径）设置，
+ *      三项不齐时回退 BookOrbit（端点带 /api/v1/koreader 前缀）设置。
+ * Frozen: credentials live in settings NVS and the v27 backup; local progress NVS is
  *      read-only here (remote progress lands as a resume suggestion consumed by the
- *      reader on next open); highlights are pull-only (keysComplete=false suppresses
- *      two-way deletions).
+ *      reader on next open). Credentials prefer the Kosync (standard protocol, endpoints
+ *      at the server root) settings and fall back to the BookOrbit (endpoints under
+ *      /api/v1/koreader) settings when incomplete.
  */
 #pragma once
 
@@ -85,6 +87,14 @@ void book_orbit_flush_events(void);
 /// low-battery gate; true runs immediately.
 void book_orbit_request_sync(bool forced, const char* path);
 
+/// 请求在 Kosync 服务器上注册当前配置的账号（POST /users/create），后台执行；
+/// 仅在 Kosync 凭据齐备时可用（BookOrbit 账号在站点上管理，返回 false）。
+/// 结果经 book_orbit_get_status 的 message/revision 观察。
+/// Request account registration on the Kosync server (POST /users/create), run in the
+/// background; only available with complete Kosync credentials (BookOrbit accounts are
+/// managed on the site, returns false). Observe the outcome via the status message.
+bool book_orbit_request_register(void);
+
 /// 取消并等待任务退出，释放临时网络；锁屏/关机前调用。
 /// Cancel and join the worker, releasing the temporary network; call before sleep/off.
 void book_orbit_cancel_join(void);
@@ -123,3 +133,56 @@ bool book_orbit_userkey(const char* password, char out[33]);
 /// out 接收 33 字节（32 hex + 终止符）；文件不可读返回 false。
 /// out receives 33 bytes (32 hex + terminator); false when unreadable.
 bool book_orbit_document_hash(const char* path, char out[33]);
+
+/// 注册请求体：{"username":"...","password":"<userkey>"}，密码为 md5 十六进制（服务端
+/// 直接存为 userkey，与 x-auth-key 头一致）。out 至少 224 字节。
+/// Registration body: {"username":"...","password":"<userkey>"}; the password is the md5
+/// hex userkey (stored verbatim server-side, matching the x-auth-key header). out needs
+/// at least 224 bytes.
+bool book_orbit_register_payload(const char* user, const char* password, char* out, size_t cap);
+
+/// 注册成功状态码：标准 Kosync 服务器返回 201；宽容实现返回 200；402 表示用户名被占用。
+/// Accepted registration statuses: standard Kosync servers return 201; lenient ones 200;
+/// 402 means the username is taken.
+bool book_orbit_register_accepted(int status);
+
+// ---- 注解上行（annotations/exchange 上传方向） / Annotation push (upload direction) --
+/// 单次 exchange 上行注解条数上限，对齐参考客户端。/ Changes per exchange round, matching
+/// the reference client's batch bound.
+#define BOOK_ORBIT_PUSH_BATCH 8
+/// 单次上行注解总文本字节预算。/ Total text bytes budget per exchange round.
+#define BOOK_ORBIT_PUSH_TEXT_BYTES 5120
+/// 单条注解在 wire 上的文本上限（服务器线上限制）。/ Per-annotation wire text cap.
+#define BOOK_ORBIT_PUSH_TEXT_MAX 2048
+
+typedef struct {
+    uint32_t timestamp;    ///< 创建时间（epoch 秒）/ Creation time (epoch seconds)
+    uint32_t start_offset; ///< 主锚点：源字节偏移 / Primary anchor: source byte offset
+    uint32_t end_offset;   ///< 排他结束偏移 / Exclusive end offset
+    int page;              ///< 页码（>0 才序列化）/ Page (serialized only when > 0)
+    const char* text;      ///< 借用文本指针 / Borrowed text pointer
+} book_orbit_push_entry_t;
+
+typedef struct {
+    char k[33];  ///< md5(datetime|pos0) 身份键 / identity key
+    char dt[20]; ///< 生成该键的原 datetime / source datetime
+} book_orbit_push_key_t;
+
+/// 上行注解位置编码："/body/TextMemo[<字节偏移>]"（设备内确定性往返，重算身份键用）。
+/// Push position encoding: "/body/TextMemo[<byte offset>]" (deterministic in-device
+/// round trip, used to recompute identity keys).
+bool book_orbit_highlight_pos(uint32_t offset, char* out, size_t cap);
+
+/// 由时间戳与主锚点偏移推导注解身份键。/ Derive the annotation identity key from the
+/// timestamp and the primary anchor offset.
+bool book_orbit_push_key(uint32_t timestamp, uint32_t start_offset, char k[33], char dt[20]);
+
+/// 构造 annotations/exchange 上行请求体：changes 条目 + 完整键集（keysComplete=complete，
+/// 删除传播=墓碑键缺席）。*out_body 由 cJSON 分配，调用方 free。
+/// Build an annotations/exchange upload body: change entries plus the complete key set
+/// (keysComplete=complete; deletions propagate as tombstone keys absent from the set).
+/// *out_body is cJSON-allocated; the caller frees it.
+bool book_orbit_annotations_exchange_body(const char* device_id, const char* device_model,
+                                          const char* hash, const book_orbit_push_entry_t* changes,
+                                          size_t change_count, const book_orbit_push_key_t* keys,
+                                          size_t key_count, bool keys_complete, char** out_body);

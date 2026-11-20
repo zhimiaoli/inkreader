@@ -12,5 +12,5 @@ flags=(-std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -g -fsanitize=address,un
        -ffunction-sections -fdata-sections
        -DBOOK_ORBIT_STATE_DIR='"build/book-orbit-test-state"'
        -Itools/book_orbit_stubs -Imain/book -Imain)
-gcc "${flags[@]}" -Wl,--gc-sections tools/book_orbit_sync_host_test.c build/book-orbit-src/book_orbit_sync.c -o build/book-tests/book_orbit
+gcc "${flags[@]}" -Wl,--gc-sections tools/book_orbit_sync_host_test.c build/book-orbit-src/book_orbit_sync.c tools/cjson/cJSON.c -o build/book-tests/book_orbit
 build/book-tests/book_orbit

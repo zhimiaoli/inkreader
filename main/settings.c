@@ -69,6 +69,12 @@ static bool reader_full_pages_valid(uint8_t pages) {
 #define NVS_KEY_ORBIT_SERVER "orbit_srv"
 #define NVS_KEY_ORBIT_USER "orbit_user"
 #define NVS_KEY_ORBIT_PASS "orbit_pass"
+#define NVS_KEY_KOSYNC_SERVER "kosync_srv"
+#define NVS_KEY_KOSYNC_USER "kosync_user"
+#define NVS_KEY_KOSYNC_PASS "kosync_pass"
+#define NVS_KEY_OPDS_SERVER "opds_srv"
+#define NVS_KEY_OPDS_USER "opds_user"
+#define NVS_KEY_OPDS_PASS "opds_pass"
 #define NVS_KEY_FONT "font"
 #define NVS_KEY_SYS_FONT "sys_font"
 #define NVS_KEY_SYS_SIZE "sys_size"
@@ -141,6 +147,12 @@ static char s_status_signature[96];
 static char s_orbit_server[224];
 static char s_orbit_user[64];
 static char s_orbit_password[96];
+static char s_kosync_server[224];
+static char s_kosync_user[64];
+static char s_kosync_password[96];
+static char s_opds_server[224];
+static char s_opds_user[64];
+static char s_opds_password[96];
 static char s_font[FONT_PATH_MAX];
 static char s_system_font[FONT_PATH_MAX];
 static uint8_t s_system_size = 120;
@@ -320,6 +332,18 @@ void app_settings_init(void) {
     if (nvs_get_str(h, NVS_KEY_ORBIT_USER, s_orbit_user, &value_len) != ESP_OK) s_orbit_user[0] = 0;
     value_len = sizeof(s_orbit_password);
     if (nvs_get_str(h, NVS_KEY_ORBIT_PASS, s_orbit_password, &value_len) != ESP_OK) s_orbit_password[0] = 0;
+    value_len = sizeof(s_kosync_server);
+    if (nvs_get_str(h, NVS_KEY_KOSYNC_SERVER, s_kosync_server, &value_len) != ESP_OK) s_kosync_server[0] = 0;
+    value_len = sizeof(s_kosync_user);
+    if (nvs_get_str(h, NVS_KEY_KOSYNC_USER, s_kosync_user, &value_len) != ESP_OK) s_kosync_user[0] = 0;
+    value_len = sizeof(s_kosync_password);
+    if (nvs_get_str(h, NVS_KEY_KOSYNC_PASS, s_kosync_password, &value_len) != ESP_OK) s_kosync_password[0] = 0;
+    value_len = sizeof(s_opds_server);
+    if (nvs_get_str(h, NVS_KEY_OPDS_SERVER, s_opds_server, &value_len) != ESP_OK) s_opds_server[0] = 0;
+    value_len = sizeof(s_opds_user);
+    if (nvs_get_str(h, NVS_KEY_OPDS_USER, s_opds_user, &value_len) != ESP_OK) s_opds_user[0] = 0;
+    value_len = sizeof(s_opds_password);
+    if (nvs_get_str(h, NVS_KEY_OPDS_PASS, s_opds_password, &value_len) != ESP_OK) s_opds_password[0] = 0;
     size_t dir_len=sizeof(s_books_dir);
     if(nvs_get_str(h,NVS_KEY_BOOKS_DIR,s_books_dir,&dir_len)!=ESP_OK||!valid_media_dir(s_books_dir))
         strlcpy(s_books_dir,"/sdcard/books",sizeof(s_books_dir));
@@ -655,6 +679,36 @@ const char *app_settings_orbit_password(void) { return s_orbit_password; }
 void app_settings_set_orbit_password(const char *password) {
     if (!password || strnlen(password, sizeof(s_orbit_password)) >= sizeof(s_orbit_password)) return;
     if (nvs_put_str(NVS_KEY_ORBIT_PASS, password)) strlcpy(s_orbit_password, password, sizeof(s_orbit_password));
+}
+const char *app_settings_kosync_server(void) { return s_kosync_server; }
+void app_settings_set_kosync_server(const char *url) {
+    if (!url || strnlen(url, sizeof(s_kosync_server)) >= sizeof(s_kosync_server)) return;
+    if (nvs_put_str(NVS_KEY_KOSYNC_SERVER, url)) strlcpy(s_kosync_server, url, sizeof(s_kosync_server));
+}
+const char *app_settings_kosync_user(void) { return s_kosync_user; }
+void app_settings_set_kosync_user(const char *user) {
+    if (!user || strnlen(user, sizeof(s_kosync_user)) >= sizeof(s_kosync_user)) return;
+    if (nvs_put_str(NVS_KEY_KOSYNC_USER, user)) strlcpy(s_kosync_user, user, sizeof(s_kosync_user));
+}
+const char *app_settings_kosync_password(void) { return s_kosync_password; }
+void app_settings_set_kosync_password(const char *password) {
+    if (!password || strnlen(password, sizeof(s_kosync_password)) >= sizeof(s_kosync_password)) return;
+    if (nvs_put_str(NVS_KEY_KOSYNC_PASS, password)) strlcpy(s_kosync_password, password, sizeof(s_kosync_password));
+}
+const char *app_settings_opds_server(void) { return s_opds_server; }
+void app_settings_set_opds_server(const char *url) {
+    if (!url || strnlen(url, sizeof(s_opds_server)) >= sizeof(s_opds_server)) return;
+    if (nvs_put_str(NVS_KEY_OPDS_SERVER, url)) strlcpy(s_opds_server, url, sizeof(s_opds_server));
+}
+const char *app_settings_opds_user(void) { return s_opds_user; }
+void app_settings_set_opds_user(const char *user) {
+    if (!user || strnlen(user, sizeof(s_opds_user)) >= sizeof(s_opds_user)) return;
+    if (nvs_put_str(NVS_KEY_OPDS_USER, user)) strlcpy(s_opds_user, user, sizeof(s_opds_user));
+}
+const char *app_settings_opds_password(void) { return s_opds_password; }
+void app_settings_set_opds_password(const char *password) {
+    if (!password || strnlen(password, sizeof(s_opds_password)) >= sizeof(s_opds_password)) return;
+    if (nvs_put_str(NVS_KEY_OPDS_PASS, password)) strlcpy(s_opds_password, password, sizeof(s_opds_password));
 }
 
 const char* app_settings_font_path(void) {
@@ -1194,7 +1248,7 @@ static bool backup_home_valid(const settings_backup_home_t *v) {
 static unsigned backup_version(const settings_backup_v1_t *backup) {
     if (memcmp(backup->magic, "PICOSET", 7)) return 0;
     unsigned char c = backup->magic[7];
-    return c >= '1' && c <= '9' ? c - '0' : c == 'A' ? 10 : c == 'B' ? 11 : c == 'C' ? 12 : c == 'D' ? 13 : c == 'E' ? 14 : c == 'F' ? 15 : c == 'G' ? 16 : c == 'H' ? 17 : c == 'I' ? 18 : c == 'J' ? 19 : c == 'K' ? 20 : c == 'L' ? 21 : c == 'M' ? 22 : c == 'N' ? 23 : c == 'O' ? 24 : c == 'P' ? 25 : c == 'Q' ? 26 : 0;
+    return c >= '1' && c <= '9' ? c - '0' : c == 'A' ? 10 : c == 'B' ? 11 : c == 'C' ? 12 : c == 'D' ? 13 : c == 'E' ? 14 : c == 'F' ? 15 : c == 'G' ? 16 : c == 'H' ? 17 : c == 'I' ? 18 : c == 'J' ? 19 : c == 'K' ? 20 : c == 'L' ? 21 : c == 'M' ? 22 : c == 'N' ? 23 : c == 'O' ? 24 : c == 'P' ? 25 : c == 'Q' ? 26 : c == 'R' ? 27 : 0;
 }
 
 static void backup_erase_secret(void *ptr, size_t size) {
@@ -1294,6 +1348,45 @@ static bool backup_orbit_valid(const settings_backup_orbit_t*c){
         strnlen(c->password,sizeof(c->password))<sizeof(c->password);
 }
 
+// 中文：备份 v27 新增网络账号块：Kosync（KOReader 标准协议）与 OPDS 2.0 服务器凭据；
+//      v26 及更早的备份不覆盖设备上的这两组凭据。
+// English: Backup v27 adds a network-accounts block: Kosync (standard KOReader protocol)
+//      and OPDS 2.0 server credentials; v26-and-older backups leave both untouched.
+typedef struct{
+    struct{char server[224],user[64],password[96];}kosync;
+    struct{char server[224],user[64],password[96];}opds;
+    uint8_t checksum[4];
+}settings_backup_accounts_t;
+static uint32_t backup_accounts_checksum(const settings_backup_accounts_t*c){
+    uint32_t h=2166136261u;
+    for(size_t i=0;i<sizeof(c->kosync);++i){h^=((const uint8_t*)&c->kosync)[i];h*=16777619u;}
+    for(size_t i=0;i<sizeof(c->opds);++i){h^=((const uint8_t*)&c->opds)[i];h*=16777619u;}
+    return h;
+}
+static settings_backup_accounts_t backup_accounts_make(void){
+    settings_backup_accounts_t c;memset(&c,0,sizeof(c));
+    strlcpy(c.kosync.server,s_kosync_server,sizeof(c.kosync.server));
+    strlcpy(c.kosync.user,s_kosync_user,sizeof(c.kosync.user));
+    strlcpy(c.kosync.password,s_kosync_password,sizeof(c.kosync.password));
+    strlcpy(c.opds.server,s_opds_server,sizeof(c.opds.server));
+    strlcpy(c.opds.user,s_opds_user,sizeof(c.opds.user));
+    strlcpy(c.opds.password,s_opds_password,sizeof(c.opds.password));
+    uint32_t h=backup_accounts_checksum(&c);
+    for(unsigned i=0;i<4;++i)c.checksum[i]=(uint8_t)(h>>(8*i));
+    return c;
+}
+static bool backup_accounts_valid(const settings_backup_accounts_t*c){
+    uint32_t h=0;for(unsigned i=0;i<4;++i)h|=(uint32_t)c->checksum[i]<<(8*i);
+    if(h!=backup_accounts_checksum(c)) return false;
+    return
+        strnlen(c->kosync.server,sizeof(c->kosync.server))<sizeof(c->kosync.server)&&
+        strnlen(c->kosync.user,sizeof(c->kosync.user))<sizeof(c->kosync.user)&&
+        strnlen(c->kosync.password,sizeof(c->kosync.password))<sizeof(c->kosync.password)&&
+        strnlen(c->opds.server,sizeof(c->opds.server))<sizeof(c->opds.server)&&
+        strnlen(c->opds.user,sizeof(c->opds.user))<sizeof(c->opds.user)&&
+        strnlen(c->opds.password,sizeof(c->opds.password))<sizeof(c->opds.password);
+}
+
 static bool backup_card_ready(void) {
     read_pico_sd_info_t info = {0};
     return read_pico_sd_get_info(&info) == ESP_OK && info.mounted;
@@ -1302,7 +1395,7 @@ static bool backup_card_ready(void) {
 esp_err_t app_settings_backup_save(void) {
     if (!backup_card_ready()) return ESP_ERR_INVALID_STATE;
     settings_backup_v1_t backup = {0};
-    memcpy(backup.magic, "PICOSETQ", sizeof(backup.magic));
+    memcpy(backup.magic, "PICOSETR", sizeof(backup.magic));
     uint8_t *f = backup.flags;
     f[BK_SLEEP] = s_sleep;
     f[BK_PICKUP] = s_pickup_wake;
@@ -1402,6 +1495,8 @@ esp_err_t app_settings_backup_save(void) {
     if(ok)ok=fwrite(&shelf,1,sizeof(shelf),file)==sizeof(shelf);
     settings_backup_orbit_t orbit=backup_orbit_make();
     if(ok)ok=fwrite(&orbit,1,sizeof(orbit),file)==sizeof(orbit);
+    settings_backup_accounts_t kosync=backup_accounts_make();
+    if(ok)ok=fwrite(&kosync,1,sizeof(kosync),file)==sizeof(kosync);
     if (ok) ok = book_history_backup_write(file) == ESP_OK;
     if (ok) ok = fflush(file) == 0;
     if (ok) ok = fsync(fileno(file)) == 0;
@@ -1564,6 +1659,9 @@ esp_err_t app_settings_backup_restore(void) {
     settings_backup_orbit_t orbit={0};
     bool has_orbit = ok && version >= 26;
     if (has_orbit) ok = fread(&orbit,1,sizeof(orbit),file)==sizeof(orbit)&&backup_orbit_valid(&orbit);
+    settings_backup_accounts_t kosync={0};
+    bool has_kosync = ok && version >= 27;
+    if (has_kosync) ok = fread(&kosync,1,sizeof(kosync),file)==sizeof(kosync)&&backup_accounts_valid(&kosync);
     bool has_history = ok && version >= 6;
     if (has_history) {
         history_position = ftell(file);
@@ -1637,6 +1735,14 @@ esp_err_t app_settings_backup_restore(void) {
         if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ORBIT_USER, orbit.user);
         if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ORBIT_PASS, orbit.password);
     }
+    if (has_kosync && err == ESP_OK) {
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_KOSYNC_SERVER, kosync.kosync.server);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_KOSYNC_USER, kosync.kosync.user);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_KOSYNC_PASS, kosync.kosync.password);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_OPDS_SERVER, kosync.opds.server);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_OPDS_USER, kosync.opds.user);
+        if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_OPDS_PASS, kosync.opds.password);
+    }
     BACKUP_SET_U8(NVS_KEY_PICKUP, BK_PICKUP);
     BACKUP_SET_U8(NVS_KEY_SYS_SIZE, BK_SYS_SIZE);
     BACKUP_SET_U8(NVS_KEY_SYS_CONTRAST, BK_SYS_CONTRAST);
@@ -1709,6 +1815,14 @@ esp_err_t app_settings_backup_restore(void) {
         strlcpy(s_orbit_server, orbit.server, sizeof(s_orbit_server));
         strlcpy(s_orbit_user, orbit.user, sizeof(s_orbit_user));
         strlcpy(s_orbit_password, orbit.password, sizeof(s_orbit_password));
+    }
+    if (has_kosync) {
+        strlcpy(s_kosync_server, kosync.kosync.server, sizeof(s_kosync_server));
+        strlcpy(s_kosync_user, kosync.kosync.user, sizeof(s_kosync_user));
+        strlcpy(s_kosync_password, kosync.kosync.password, sizeof(s_kosync_password));
+        strlcpy(s_opds_server, kosync.opds.server, sizeof(s_opds_server));
+        strlcpy(s_opds_user, kosync.opds.user, sizeof(s_opds_user));
+        strlcpy(s_opds_password, kosync.opds.password, sizeof(s_opds_password));
     }
     s_pickup_wake = f[BK_PICKUP];
     s_system_size = f[BK_SYS_SIZE];

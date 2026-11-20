@@ -6,7 +6,7 @@
 
 ## 支持的设备
 
-| 编译选项 | `pico` | `metalio47` |
+| 编译选项 | `metalio47` |
 | --- | --- | --- |
 | 设备 | 原 kiikoread 墨水屏 | Metalio E-INK4 Plus 4.7 V1.5 |
 | 芯片 / 编译器 | ESP32-S3 / Xtensa | ESP32-S31 / RISC-V |

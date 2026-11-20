@@ -14,6 +14,7 @@ extern const app_desc_t app_image;
 extern const app_desc_t app_cloud_sync;
 #if KIIKO_BOARD_METALIO47
 extern const app_desc_t app_book_orbit;
+extern const app_desc_t app_opds;
 #endif
 extern const app_desc_t app_dashboard;
 extern const app_desc_t app_files;
@@ -32,6 +33,7 @@ static const app_desc_t* const s_apps[] = {
     &app_cloud_sync,
 #if KIIKO_BOARD_METALIO47
     &app_book_orbit,
+    &app_opds,
 #endif
 };
 

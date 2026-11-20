@@ -91,6 +91,19 @@ static size_t s_inline_note_count;
 typedef struct { size_t page, note; int x, y, w, h; } layout_note_marker_t;
 static layout_note_marker_t* s_note_markers;
 static size_t s_note_marker_count, s_note_marker_capacity;
+// 行矩形（横排）：划线/选区的命中与渲染几何。y 相对正文带，查询时加顶部留白。
+// Line rects (horizontal): geometry for highlight hit-testing and rendering. y is relative
+// to the body band; top padding is added at query time.
+typedef struct { uint32_t page, start, end; int16_t x, y, w, h; } layout_line_rect_t;
+static layout_line_rect_t* s_line_rects;
+static size_t s_line_rect_count, s_line_rect_capacity;
+// 当前行可见起点：s_line 与源字节的映射基准，take_line 每次更新。
+// Visible start of the current line: the base mapping s_line to source bytes, updated on
+// every take_line.
+static size_t s_line_visible_off;
+// 活动划线区间（借用，按 start 升序）。/ Active highlight spans (borrowed, sorted by start).
+static const book_layout_highlight_span_t* s_highlights;
+static size_t s_highlight_count;
 static book_layout_image_dims_fn s_dims_fn;
 static void* s_dims_ctx;
 
@@ -158,9 +171,37 @@ static uint8_t slot_ready_or_system(uint8_t slot) {
     return slot;
 }
 
+/* 前置声明：UTF-8 解码助手定义在本函数之后。Forward decls: the UTF-8 helpers live below. */
+static size_t codepoint_size(const char* text, size_t remaining);
+static uint32_t codepoint_value(const char* text, size_t n);
+
 static void slot_select_for(size_t off) {
     uint8_t slot = slot_ready_or_system(slot_at(off));
     if (slot != (uint8_t)ttf_font_selected()) ttf_font_select(slot);
+}
+
+// 行内区间宽度：[from,to) 逐字按所属槽字体量宽，字间加字距（标题不加）。
+// 与排版累加规则一致；行内注号占位按正文宽近似。
+// Width of a source span: per-glyph advances in each glyph's own face plus tracking
+// (headings carry none); matches the layout accumulation, with inline icons approximated.
+static int line_span_width(int line_px, bool heading, size_t from, size_t to) {
+    int width = 0;
+    bool first = true;
+    for (size_t p = from; p < to && p < s_len;) {
+        size_t n = codepoint_size(s_text + p, s_len - p);
+        if (!n) break;
+        char glyph[5];
+        memcpy(glyph, s_text + p, n);
+        glyph[n] = 0;
+        slot_select_for(p);
+        int gw = ttf_text_width_px(line_px, glyph);
+        if (gw < 0) gw = 0;
+        if (!first && !heading) width += s_tracking_px;
+        width += gw;
+        first = false;
+        p += n;
+    }
+    return width;
 }
 
 static void line_run_push(size_t offset, uint8_t slot) {
@@ -305,6 +346,10 @@ void book_layout_free(void) {
     s_image_count = s_image_capacity = 0;
     s_note_markers = NULL;
     s_note_marker_count = s_note_marker_capacity = 0;
+    s_line_rects = NULL;
+    s_line_rect_count = s_line_rect_capacity = 0;
+    s_highlights = NULL;
+    s_highlight_count = 0;
     s_text = NULL;
     s_count = s_capacity = s_len = 0;
     s_px = 0;
@@ -442,8 +487,7 @@ static bool record_page_image(int image, int x, int y, int w, int h) {
     return true;
 }
 
-static bool record_note_marker(size_t page, size_t note, int x, int y, int w, int h) {
-    if (s_note_marker_count == s_note_marker_capacity) {
+static bool record_note_marker(size_t page, size_t note, int x, int y, int w, int h) {    if (s_note_marker_count == s_note_marker_capacity) {
         size_t cap = s_note_marker_capacity ? s_note_marker_capacity * 2 : 16;
         if (cap > PAGE_MAX * 4) return false;
         layout_note_marker_t* grown = heap_caps_realloc(s_note_markers, cap * sizeof(*grown), PSRAM_CAPS);
@@ -453,6 +497,238 @@ static bool record_note_marker(size_t page, size_t note, int x, int y, int w, in
     }
     s_note_markers[s_note_marker_count++] = (layout_note_marker_t){page, note, x, y, w, h};
     return true;
+}
+
+static bool record_line_rect(size_t page, size_t start, size_t end, int x, int y, int w, int h) {
+    if (s_line_rect_count == s_line_rect_capacity) {
+        size_t cap = s_line_rect_capacity ? s_line_rect_capacity * 2 : 64;
+        if (cap > PAGE_MAX * 8) return false;
+        layout_line_rect_t* grown = heap_caps_realloc(s_line_rects, cap * sizeof(*grown), PSRAM_CAPS);
+        if (!grown) return false;
+        s_line_rects = grown;
+        s_line_rect_capacity = cap;
+    }
+    s_line_rects[s_line_rect_count++] =
+        (layout_line_rect_t){page, start, end, (int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+    return true;
+}
+
+int book_layout_page_line_count(size_t page) {
+    int n = 0;
+    for (size_t i = 0; i < s_line_rect_count; ++i)
+        if (s_line_rects[i].page == page) ++n;
+    return n;
+}
+
+bool book_layout_page_line_at(size_t page, int i, EpdRect* rect, size_t* start, size_t* end) {
+    int seen = 0;
+    for (size_t k = 0; k < s_line_rect_count; ++k) {
+        if (s_line_rects[k].page != page) continue;
+        if (seen++ != i) continue;
+        if (rect)
+            *rect = (EpdRect){s_line_rects[k].x, s_line_rects[k].y + book_layout_page_top_padding(page),
+                              s_line_rects[k].w, s_line_rects[k].h};
+        if (start) *start = s_line_rects[k].start;
+        if (end) *end = s_line_rects[k].end;
+        return true;
+    }
+    return false;
+}
+
+void book_layout_set_highlights(const book_layout_highlight_span_t* spans, size_t count) {
+    s_highlights = count ? spans : NULL;
+    s_highlight_count = count ? count : 0;
+}
+
+bool book_layout_text_range(size_t start, size_t end, char* out, size_t cap) {
+    if (!out || !cap || !s_text || start >= end || end > s_len) return false;
+    size_t want = end - start;
+    if (want > cap - 1) {
+        want = cap - 1;
+        /* 截到 UTF-8 边界。/ Trim to a UTF-8 boundary. */
+        while (want > 0 && ((unsigned char)s_text[start + want] & 0xC0) == 0x80) --want;
+    }
+    memcpy(out, s_text + start, want);
+    out[want] = 0;
+    return want > 0;
+}
+
+/* 前置声明：新查询 API 位于 take_line 定义之前。Forward decl: the query APIs sit above
+   take_line's definition. */
+static bool take_line(size_t off, int advance_limit, int hang_margin, size_t* next,
+                      bool* paragraph_end, int* px, bool* heading, int* line_width, int* indent,
+                      uint8_t* align, int* margin_before, int* margin_after);
+
+/// 重建一行并量前缀；返回行几何与可见起点。/ Rebuild one line and measure; returns geometry.
+static bool line_rebuild(size_t line_start, size_t* line_end_off, int* line_px, bool* heading) {
+    size_t next;
+    bool paragraph_end;
+    int line_width, indent, margin_before, margin_after;
+    uint8_t align;
+    if (!take_line(line_start, s_rect.width, s_rect.x, &next, &paragraph_end, line_px, heading,
+                   &line_width, &indent, &align, &margin_before, &margin_after))
+        return false;
+    (void)line_width;
+    (void)indent;
+    (void)align;
+    if (!s_line[0]) return false;
+    *line_end_off = s_line_visible_off + strlen(s_line);
+    return true;
+}
+
+bool book_layout_offset_x(size_t page, EpdRect rect, int px, size_t off, int* out_x, int* y_top,
+                          int* y_bottom) {
+    if (!s_count || s_vertical || px != s_px || rect.width != s_rect.width ||
+        rect.height != s_rect.height)
+        return false;
+    const layout_line_rect_t* line = NULL;
+    for (size_t i = 0; i < s_line_rect_count; ++i) {
+        if (s_line_rects[i].page != page) continue;
+        if (off >= s_line_rects[i].start && off < s_line_rects[i].end) {
+            line = &s_line_rects[i];
+            break;
+        }
+    }
+    /* 选区终点恰在行尾：取该行，x 落在行末。Selection end at a line end: clamp to it. */
+    if (!line)
+        for (size_t i = 0; i < s_line_rect_count; ++i) {
+            if (s_line_rects[i].page != page || off != s_line_rects[i].end) continue;
+            line = &s_line_rects[i];
+            break;
+        }
+    if (!line) return false;
+    int line_px;
+    bool heading;
+    size_t line_end;
+    if (!line_rebuild(line->start, &line_end, &line_px, &heading)) return false;
+    ttf_draw_set_runs(NULL, 0);
+    size_t target = off < s_line_visible_off ? s_line_visible_off : (off < line_end ? off : line_end);
+    int rel = line_span_width(line_px, heading, s_line_visible_off, target);
+    if (out_x) *out_x = line->x + rel;
+    int top = line->y + book_layout_page_top_padding(page);
+    if (y_top) *y_top = top;
+    if (y_bottom) *y_bottom = top + line->h;
+    ttf_font_select(TTF_FONT_SLOT_SYSTEM);
+    return true;
+}
+
+bool book_layout_hit_word(size_t page, EpdRect rect, int px, int x, int y, size_t* start,
+                          size_t* end, EpdRect* word_rect) {
+    if (!s_count || s_vertical || px != s_px || rect.width != s_rect.width ||
+        rect.height != s_rect.height || x < 0 || y < 0)
+        return false;
+    const layout_line_rect_t* line = NULL;
+    for (size_t i = 0; i < s_line_rect_count; ++i) {
+        if (s_line_rects[i].page != page) continue;
+        int ly = s_line_rects[i].y + book_layout_page_top_padding(page);
+        if (y >= ly && y < ly + s_line_rects[i].h) {
+            line = &s_line_rects[i];
+            break;
+        }
+    }
+    if (!line) return false;
+    int line_px;
+    bool heading;
+    size_t line_end;
+    if (!line_rebuild(line->start, &line_end, &line_px, &heading)) return false;
+    ttf_draw_set_runs(NULL, 0);
+    size_t vis = s_line_visible_off;
+    /* 定位命中的字：逐字累加宽度。Locate the glyph under x by accumulating widths. */
+    int acc = 0;
+    size_t hit = SIZE_MAX;
+    int hit_w = 0;
+    for (size_t p = vis; p < line_end;) {
+        size_t n = codepoint_size(s_text + p, s_len - p);
+        if (!n) break;
+        char glyph[5];
+        memcpy(glyph, s_text + p, n);
+        glyph[n] = 0;
+        slot_select_for(p);
+        int gw = ttf_text_width_px(line_px, glyph);
+        if (gw < 0) gw = 0;
+        int nx = acc + ((acc && !heading) ? s_tracking_px : 0) + gw;
+        if (x < line->x + nx) {
+            hit = p;
+            hit_w = gw;
+            acc = nx - gw;
+            break;
+        }
+        acc = nx;
+        p += n;
+    }
+    ttf_font_select(TTF_FONT_SLOT_SYSTEM);
+    if (hit == SIZE_MAX) return false;
+    /* 词边界：拉丁词扩到词首词尾；CJK 单字成词（按码点）。 */
+    /* Word bounds: Latin runs extend to word edges; CJK singles stand alone. */
+    size_t ws = hit, we = hit;
+    bool latin_hit = false;
+    {
+        size_t n = codepoint_size(s_text + hit, s_len - hit);
+        uint32_t cp = codepoint_value(s_text + hit, n);
+        latin_hit = (cp < 0x80 && ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
+                                   (cp >= '0' && cp <= '9') || cp == '-' || cp == '\'' ||
+                                   cp == '&' || cp == '@' || cp == '_' || cp == '.'));
+    }
+    if (latin_hit) {
+        while (ws > vis) {
+            /* 回退一个码点。Step back one codepoint. */
+            size_t p = ws - 1;
+            while (p > vis && (s_text[p] & 0xC0) == 0x80) --p;
+            size_t n = codepoint_size(s_text + p, s_len - p);
+            uint32_t cp = codepoint_value(s_text + p, n);
+            if (!(cp < 0x80 && ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
+                                (cp >= '0' && cp <= '9') || cp == '-' || cp == '\'' ||
+                                cp == '&' || cp == '@' || cp == '_' || cp == '.')))
+                break;
+            ws = p;
+        }
+        while (we < line_end) {
+            size_t n = codepoint_size(s_text + we, s_len - we);
+            uint32_t cp = codepoint_value(s_text + we, n);
+            if (!(cp < 0x80 && ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
+                                (cp >= '0' && cp <= '9') || cp == '-' || cp == '\'' ||
+                                cp == '&' || cp == '@' || cp == '_' || cp == '.')))
+                break;
+            we += n;
+        }
+    } else {
+        we = hit + codepoint_size(s_text + hit, s_len - hit);
+    }
+    if (start) *start = ws;
+    if (end) *end = we;
+    if (word_rect) {
+        int ly = line->y + book_layout_page_top_padding(page);
+        int x1 = line->x + line_span_width(line_px, heading, vis, ws);
+        int x2 = line->x + line_span_width(line_px, heading, vis, we);
+        *word_rect = (EpdRect){x1, ly, x2 > x1 ? x2 - x1 : hit_w, line->h};
+    }
+    return true;
+}
+
+uint32_t book_layout_signature(void) {
+    if (!s_count) return 0;
+    uint32_t h = 2166136261u;
+#define SIG_MIX(v)                                  \
+    do {                                            \
+        for (size_t i = 0; i < sizeof(v); ++i) {    \
+            h ^= ((const uint8_t*)&(v))[i];         \
+            h *= 16777619u;                         \
+        }                                           \
+    } while (0)
+    SIG_MIX(s_rect);
+    SIG_MIX(s_px);
+    SIG_MIX(s_line_percent);
+    SIG_MIX(s_paragraph_percent);
+    SIG_MIX(s_tracking_px);
+    SIG_MIX(s_first_line_indent_em);
+    SIG_MIX(s_first_line_indent_adjust_px);
+    {
+        uint8_t flags = (uint8_t)(s_vertical ? 1 : 0) | (uint8_t)(s_images_visible ? 2 : 0);
+        SIG_MIX(flags);
+    }
+    SIG_MIX(s_count);
+#undef SIG_MIX
+    return h ? h : 1;
 }
 
 int book_layout_page_note_marker_count(size_t page) {
@@ -767,6 +1043,7 @@ static bool take_line(size_t off, int advance_limit, int hang_margin, size_t* ne
     if (first_line && !*heading && !*align) visible_off = visible_start(off, limit);
     if (!s_vertical && !first_line)
         while (visible_off < limit && (s_text[visible_off] == ' ' || s_text[visible_off] == '\t')) ++visible_off;
+    s_line_visible_off = visible_off;
     if (first_line && !*heading && !*align) {
         if (visible_off < limit && *indent > 0) {
             size_t n = codepoint_size(s_text + visible_off, limit - visible_off);
@@ -1174,6 +1451,11 @@ bool book_layout_build_blocks(const char* utf8, size_t len, const blk_t* blocks,
         if(s_line[0]){s_page_has_text=true;s_page_text_bottom=used+leading+fit_height;}
         s_last_line_used = (int)used + leading;
         s_last_line_x_end = s_rect.x + indent + line_width;
+        if (!s_vertical && s_line[0] && line_width > 0) {
+            if (!record_line_rect(s_count ? s_count - 1 : 0, off, next, s_rect.x + indent,
+                                  (int)used + leading, line_width, line_height))
+                goto fail;
+        }
         used += leading + line_height;
         if (paragraph_end) used += gap_for(line_height, heading) + margin_after;
         off = next;
@@ -1510,6 +1792,21 @@ void book_layout_draw_page(uint8_t* fb, size_t page, EpdRect rect, int px) {
             // face.
             ttf_draw_set_runs(NULL, 0);
             ttf_font_select(TTF_FONT_SLOT_SYSTEM);
+            // 划线渲染：与行相交的区间按前缀量宽画下划线；每字按所属槽字体量宽。
+            // Highlight rendering: spans intersecting the line get an underline sized by
+            // per-glyph prefix widths in each glyph's own face.
+            for (size_t hi = 0; hi < s_highlight_count; ++hi) {
+                uint32_t a = s_highlights[hi].start, b = s_highlights[hi].end;
+                if (b <= off || a >= next || b <= s_line_visible_off) continue;
+                size_t sa = a < s_line_visible_off ? s_line_visible_off : a;
+                size_t sb = b < next ? b : next;
+                if (sa >= sb) continue;
+                int x1 = x + line_span_width(line_px, heading, s_line_visible_off, sa);
+                int x2 = x + line_span_width(line_px, heading, s_line_visible_off, sb);
+                int bar_y = rect.y + (int)used + line_px + 1;
+                if (bar_y + 3 > rect.y + rect.height) bar_y = rect.y + rect.height - 3;
+                if (x2 > x1) epd_fill_rect((EpdRect){x1, bar_y, x2 - x1, 3}, 0x30, fb);
+            }
         }
         used += line_height;
         if (paragraph_end) used += gap_for(line_height, heading) + margin_after;

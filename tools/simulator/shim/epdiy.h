@@ -27,7 +27,7 @@ enum EpdRotation epd_get_rotation(void);
 #define BLACK_ON_WHITE 0
 #define WHITE_ON_BLACK 1
 enum EpdDrawMode{MODE_INIT=0,MODE_DU=1,MODE_GC16=2,MODE_GL16=5};
-enum EpdDrawError{EPD_DRAW_SUCCESS=0,EPD_DRAW_EMPTY_LINE_QUEUE=1};
+enum EpdDrawError{EPD_DRAW_SUCCESS=0,EPD_DRAW_EMPTY_LINE_QUEUE=1,EPD_DRAW_NO_PHASES_AVAILABLE=4,EPD_DRAW_INVALID_CROP=5};
 typedef struct{int dummy;} EpdWaveform;
 EpdRect epd_full_screen(void);
 void epd_draw_hline(int,int,int,uint8_t,uint8_t*);
@@ -38,3 +38,5 @@ void epd_draw_image(EpdRect,const uint8_t*,uint8_t*);
 void epd_set_rotation(enum EpdRotation);
 void epd_poweron(void);void epd_poweroff(void);
 void epd_copy_to_framebuffer(EpdRect,const uint8_t*,uint8_t*);
+void epd_clear(void);
+enum EpdDrawError epd_clear_checked(void);
